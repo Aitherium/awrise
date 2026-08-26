@@ -7,6 +7,7 @@ import sys
 from datetime import datetime, timedelta
 from pathlib import Path
 
+
 def get_awrise_home() -> Path:
     home = os.environ.get("AWRISE_HOME")
     path = Path(home) if home else Path.home() / ".aither" / "awrise"
@@ -43,7 +44,11 @@ def parse_interval(interval_str: str) -> timedelta:
     if value <= 0:
         raise ValueError(f"Interval must be positive: {interval_str}")
     unit = match.group(2)
-    return {"m": timedelta(minutes=value), "h": timedelta(hours=value), "d": timedelta(days=value)}[unit]
+    return {
+        "m": timedelta(minutes=value),
+        "h": timedelta(hours=value),
+        "d": timedelta(days=value),
+    }[unit]
 
 def cmd_add(args) -> int:
     if not all([args.name, args.every, args.run]):
@@ -87,7 +92,10 @@ def cmd_list(args) -> int:
     print("-" * 102)
     for name, job in sorted(jobs.items()):
         sec = float(job.get("interval", 0))
-        istr = f"{sec / 86400:.0f}d" if sec >= 86400 else (f"{sec / 3600:.0f}h" if sec >= 3600 else f"{sec / 60:.0f}m")
+        istr = (
+            f"{sec / 86400:.0f}d" if sec >= 86400
+            else (f"{sec / 3600:.0f}h" if sec >= 3600 else f"{sec / 60:.0f}m")
+        )
         cmd_str = job.get("command", "")[:40]
         last_run = job.get("last_run") or "never"
         status = job.get("last_status") or "pending"
@@ -122,7 +130,10 @@ def cmd_run_due(args) -> int:
             if not args.quiet:
                 print(f"Running {name}...")
             try:
-                result = subprocess.run(cmd, shell=True, capture_output=True, text=True, timeout=300)
+                result = subprocess.run(
+                    cmd, shell=True, capture_output=True, text=True, timeout=300,
+                    encoding="utf-8", errors="replace",
+                )
                 job["last_run"] = now.isoformat()
                 if result.returncode == 0:
                     job["last_status"] = "success"
@@ -146,7 +157,11 @@ def cmd_self_test(args) -> int:
     print("Running self-tests...")
     all_pass = True
     print("  Test: parse_interval with valid inputs...")
-    for i_str, expected in [("15m", timedelta(minutes=15)), ("2h", timedelta(hours=2)), ("1d", timedelta(days=1))]:
+    for i_str, expected in [
+        ("15m", timedelta(minutes=15)),
+        ("2h", timedelta(hours=2)),
+        ("1d", timedelta(days=1)),
+    ]:
         try:
             if parse_interval(i_str) == expected:
                 print(f"    PASS: {i_str}")
@@ -167,6 +182,11 @@ def cmd_self_test(args) -> int:
     return 0 if all_pass else 1
 
 def main() -> int:
+    # GENERATED doctor intercept (gen_aw_doctor.py) -- do not edit
+    _dv = locals().get("argv")
+    if (_dv if _dv is not None else __import__("sys").argv[1:])[:1] == ["doctor"]:
+        from ._doctor import report
+        return report()
     if "--self-test" in sys.argv:
         sys.argv = ["awrise"]
         args = argparse.Namespace()

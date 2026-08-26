@@ -1,11 +1,10 @@
-import json
-import os
-import pytest
-from datetime import timedelta
-from pathlib import Path
-from awrise.cli import parse_interval, cmd_add, cmd_list, cmd_run_due, load_jobs, save_jobs
 import argparse
-import tempfile
+import json
+from datetime import timedelta
+
+import pytest
+from awrise.cli import cmd_add, cmd_list, cmd_run_due, load_jobs, parse_interval
+
 
 def test_parse_interval_valid():
     assert parse_interval("15m") == timedelta(minutes=15)
