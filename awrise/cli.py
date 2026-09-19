@@ -5,6 +5,7 @@ policy (or nothing was due); 1 = at least one wake ended ``failure``,
 ``timeout``, ``error`` or ``orphaned``; 2 = the store or the ledger could not
 be read or written, so nothing can be claimed about the pass.
 """
+
 from __future__ import annotations
 
 import argparse
@@ -39,6 +40,7 @@ class FatalError(Exception):
 
 # ------------------------------------------------------- 0.1.0 module surface
 
+
 def get_awrise_home() -> Path:
     return store.home()
 
@@ -57,8 +59,10 @@ def save_jobs(jobs: dict) -> None:
 
 # ------------------------------------------------------------------ spec
 
-def _validate_spec(job: dict, allow_overrun: bool, check_overrun: bool = True,
-                   name: str = "") -> None:
+
+def _validate_spec(
+    job: dict, allow_overrun: bool, check_overrun: bool = True, name: str = ""
+) -> None:
     run = (job.get("run") or "").strip()
     if not run:
         raise FatalError(1, "Error: empty command refused")
@@ -70,18 +74,25 @@ def _validate_spec(job: dict, allow_overrun: bool, check_overrun: bool = True,
     try:
         timeout = int(job.get("timeout_s"))
     except (TypeError, ValueError) as exc:
-        raise FatalError(1, "Error: timeout_s must be an integer: "
-                            f"{job.get('timeout_s')!r}") from exc
+        raise FatalError(
+            1, f"Error: timeout_s must be an integer: {job.get('timeout_s')!r}"
+        ) from exc
     if timeout <= 0:
         raise FatalError(1, f"Error: timeout_s must be positive: {timeout}")
     if timeout > clock.MAX_TIMEOUT_S:
-        raise FatalError(1, f"Error: timeout_s {timeout} is longer than this platform can "
-                            f"wait ({clock.MAX_TIMEOUT_S}s) -- a wake past it could not be "
-                            "timed out or killed")
+        raise FatalError(
+            1,
+            f"Error: timeout_s {timeout} is longer than this platform can "
+            f"wait ({clock.MAX_TIMEOUT_S}s) -- a wake past it could not be "
+            "timed out or killed",
+        )
     if check_overrun and timeout >= job["interval_s"] and not allow_overrun:
-        raise FatalError(1, f"Error: timeout_s {timeout} >= interval {job['interval_s']:g}s "
-                            "-- the job cannot finish inside its window "
-                            "(--allow-overrun to accept)")
+        raise FatalError(
+            1,
+            f"Error: timeout_s {timeout} >= interval {job['interval_s']:g}s "
+            "-- the job cannot finish inside its window "
+            "(--allow-overrun to accept)",
+        )
     job["timeout_s"] = timeout
     try:
         clock.parse_at(job.get("at"))
@@ -94,12 +105,16 @@ def _validate_spec(job: dict, allow_overrun: bool, check_overrun: bool = True,
     if not isinstance(job.get("detach"), bool):
         raise FatalError(1, "Error: detach must be true or false")
     if job.get("missed") not in store.MISSED_POLICIES:
-        raise FatalError(1, f"Error: missed must be one of "
-                            f"{', '.join(store.MISSED_POLICIES)}, not {job.get('missed')!r}")
+        raise FatalError(
+            1,
+            f"Error: missed must be one of "
+            f"{', '.join(store.MISSED_POLICIES)}, not {job.get('missed')!r}",
+        )
     kind = job.get("executor") or "shell"
     if kind not in executors.KINDS:
-        raise FatalError(1, f"Error: executor must be one of {', '.join(executors.KINDS)}, "
-                            f"not {kind!r}")
+        raise FatalError(
+            1, f"Error: executor must be one of {', '.join(executors.KINDS)}, not {kind!r}"
+        )
     job["executor"] = kind
     problem = executors.bearer_path_problem(job.get("bearer_file"))
     if problem is not None:
@@ -109,8 +124,11 @@ def _validate_spec(job: dict, allow_overrun: bool, check_overrun: bool = True,
         # Refused HERE as well as in the executor: a mode that skips the
         # permission prompt must not be storable at all, so it cannot be
         # waiting in jobs.json for a later version to start honouring.
-        raise FatalError(1, f"Error: permission_mode must be one of "
-                            f"{', '.join(executors.PERMISSION_MODES)}, not {mode!r}")
+        raise FatalError(
+            1,
+            f"Error: permission_mode must be one of "
+            f"{', '.join(executors.PERMISSION_MODES)}, not {mode!r}",
+        )
     unit = job.get("wake")
     if unit is not None and not isinstance(unit, str):
         raise FatalError(1, "Error: wake must be a unit name or null")
@@ -126,11 +144,15 @@ def _validate_spec(job: dict, allow_overrun: bool, check_overrun: bool = True,
         # Refused HERE as well as in the store: a park with no unit, or a park
         # behind a detached child, is a job that would misbehave every night.
         if unit is None:
-            raise FatalError(1, "Error: park_after needs wake=<unit> -- the unit to park is "
-                                "the one the job woke")
+            raise FatalError(
+                1, "Error: park_after needs wake=<unit> -- the unit to park is the one the job woke"
+            )
         if job.get("detach"):
-            raise FatalError(1, "Error: park_after is refused with detach -- a detached child "
-                                "outlives the wake, so its unit must not be parked under it")
+            raise FatalError(
+                1,
+                "Error: park_after is refused with detach -- a detached child "
+                "outlives the wake, so its unit must not be parked under it",
+            )
     try:
         job["report"] = store.validate_report(name or "job", job.get("report"))
     except store.StoreError as exc:
@@ -166,8 +188,9 @@ def _coerce(key: str, raw: str):
         try:
             return int(raw.strip())
         except ValueError as exc:
-            raise FatalError(1, f"Error: report.card_after must be an integer, "
-                                f"not {raw.strip()!r}") from exc
+            raise FatalError(
+                1, f"Error: report.card_after must be an integer, not {raw.strip()!r}"
+            ) from exc
     return raw
 
 
@@ -190,6 +213,7 @@ def _assign(job: dict, key: str, value) -> None:
 
 
 # ------------------------------------------------------------------ verbs
+
 
 def _name(args) -> str:
     """The job name as every verb reads it: stripped, so ``add --name ' x'``
@@ -218,8 +242,9 @@ def cmd_add(args) -> int:
     job["at"] = getattr(args, "at", None) or None
     job["enabled"] = not getattr(args, "disabled", False)
     job["detach"] = bool(getattr(args, "detach", False))
-    job["missed"] = _coerce("missed", getattr(args, "missed", None)
-                            or str(store.SPEC_DEFAULTS["missed"]))
+    job["missed"] = _coerce(
+        "missed", getattr(args, "missed", None) or str(store.SPEC_DEFAULTS["missed"])
+    )
     job["executor"] = (getattr(args, "executor", None) or "shell").strip().lower()
     job["bearer_file"] = getattr(args, "bearer_file", None) or None
     job["permission_mode"] = getattr(args, "permission_mode", None) or None
@@ -259,11 +284,15 @@ def cmd_set(args) -> int:
     touched = {a.split("=", 1)[0].strip() for a in assignments}
     # The overrun rule is re-asked only when the window/timeout relation
     # changes; an accepted --allow-overrun is not revoked by `set enabled=`.
-    _validate_spec(job, getattr(args, "allow_overrun", False),
-                   check_overrun=bool(touched & {"every", "timeout_s"}), name=name)
+    _validate_spec(
+        job,
+        getattr(args, "allow_overrun", False),
+        check_overrun=bool(touched & {"every", "timeout_s"}),
+        name=name,
+    )
     job["updated_at"] = clock.iso(clock.now_utc())
     store.save(jobs)
-    print(f"Updated {name}: " + ", ".join(a.split('=', 1)[0] for a in assignments))
+    print(f"Updated {name}: " + ", ".join(a.split("=", 1)[0] for a in assignments))
     return 0
 
 
@@ -295,14 +324,18 @@ def cmd_remove(args) -> int:
     if name not in jobs:
         print("Not found", file=sys.stderr)
         return 1
-    live = [w for w, row in _open_wakes(base).items()
-            if row.get("job") == name and _wake_is_live(row)]
+    live = [
+        w for w, row in _open_wakes(base).items() if row.get("job") == name and _wake_is_live(row)
+    ]
     held = lock.inspect(base, name, jobs[name].get("timeout_s"))
     if held is not None and held.wake_id not in live:
         live.append(held.wake_id or held.reason)
     if live:
-        print(f"Refusing: {name} has a wake in progress ({', '.join(live)}); "
-              f"wait for it or run `awrise reconcile`", file=sys.stderr)
+        print(
+            f"Refusing: {name} has a wake in progress ({', '.join(live)}); "
+            f"wait for it or run `awrise reconcile`",
+            file=sys.stderr,
+        )
         return 1
     del jobs[name]
     store.save(jobs, base)
@@ -356,12 +389,15 @@ def cmd_list(args) -> int:
     if getattr(args, "json", False):
         # The record as stored, plus what every reader derives from it -- so a
         # script never has to re-implement dueness to know when a job is next up.
-        out = {name: dict(job, **_derived(base, name, job, now))
-               for name, job in sorted(jobs.items())}
+        out = {
+            name: dict(job, **_derived(base, name, job, now)) for name, job in sorted(jobs.items())
+        }
         print(json.dumps(out, indent=2, sort_keys=True))
         return 0
-    print(f"{'Name':<20} {'Every':<8} {'On':<3} {'Command':<30} {'Last Started':<20} "
-          f"{'State':<16} {'Next due':<14}")
+    print(
+        f"{'Name':<20} {'Every':<8} {'On':<3} {'Command':<30} {'Last Started':<20} "
+        f"{'State':<16} {'Next due':<14}"
+    )
     print("-" * 124)
     for name, job in sorted(jobs.items()):
         last = (job.get("last_started_at") or "never")[:19]
@@ -369,12 +405,15 @@ def cmd_list(args) -> int:
         on = "yes" if job.get("enabled", True) else "no"
         derived = _derived(base, name, job, now)
         due = "in progress" if derived["in_progress"] else _due_phrase(derived["due_in_s"])
-        print(f"{name:<20} {str(job.get('every')):<8} {on:<3} {(job.get('run') or '')[:30]:<30} "
-              f"{last:<20} {state:<16} {due:<14}")
+        print(
+            f"{name:<20} {str(job.get('every')):<8} {on:<3} {(job.get('run') or '')[:30]:<30} "
+            f"{last:<20} {state:<16} {due:<14}"
+        )
     return 0
 
 
 # ---------------------------------------------------------------- the pass
+
 
 def _recent_rows(base: Path) -> List[dict]:
     return ledger.read(base, since=timedelta(days=30))
@@ -419,8 +458,9 @@ def _wake_is_live(row: dict) -> bool:
     return age is not None and pid > 0 and lock.is_alive(pid) and age < bound
 
 
-def reconcile(base: Path, jobs: dict, pass_id: str,
-              invoker: str) -> Tuple[dict, List[str], List[str]]:
+def reconcile(
+    base: Path, jobs: dict, pass_id: str, invoker: str
+) -> Tuple[dict, List[str], List[str]]:
     """Close every ``started`` with no ``finished`` that cannot still be running,
     and re-stamp any finished wake whose stamp never reached ``jobs.json``.
 
@@ -450,8 +490,10 @@ def reconcile(base: Path, jobs: dict, pass_id: str,
             try:
                 with open(marker, "r", encoding="utf-8", newline="") as fh:
                     recovered = json.load(fh)
-                extra = {"recovered_state": recovered.get("state"),
-                         "recovered_exit_code": recovered.get("exit_code")}
+                extra = {
+                    "recovered_state": recovered.get("state"),
+                    "recovered_exit_code": recovered.get("exit_code"),
+                }
             except (OSError, json.JSONDecodeError):
                 extra = {}
         elif not lock.is_alive(_row_pid(row)):
@@ -460,10 +502,20 @@ def reconcile(base: Path, jobs: dict, pass_id: str,
             reason = "ts_unreadable"
         else:
             reason = f"age_exceeded_{int(bound)}s"
-        ledger.append(base, {"wake_id": wake_id, "pass_id": pass_id, "invoker": invoker,
-                             "job": row.get("job"), "event": "finished", "state": "orphaned",
-                             "reason": reason,
-                             "orphan_age_s": None if age is None else round(age, 1), **extra})
+        ledger.append(
+            base,
+            {
+                "wake_id": wake_id,
+                "pass_id": pass_id,
+                "invoker": invoker,
+                "job": row.get("job"),
+                "event": "finished",
+                "state": "orphaned",
+                "reason": reason,
+                "orphan_age_s": None if age is None else round(age, 1),
+                **extra,
+            },
+        )
         if marker.exists():
             # The row is written; a marker that will not unlink is re-read as
             # recovered fields next time, never as a second orphan.
@@ -482,18 +534,40 @@ def reconcile(base: Path, jobs: dict, pass_id: str,
             # only ever orphans walks past `card_after` in silence.
             notices.append((row["job"], wake_id, Outcome("orphaned", reason)))
     if closed:
-        ledger.append(base, {"pass_id": pass_id, "invoker": invoker, "event": "reconciled",
-                             "reason": f"closed_{len(closed)}_orphaned", "wakes": closed})
+        ledger.append(
+            base,
+            {
+                "pass_id": pass_id,
+                "invoker": invoker,
+                "event": "reconciled",
+                "reason": f"closed_{len(closed)}_orphaned",
+                "wakes": closed,
+            },
+        )
     broken = lock.sweep(base, jobs)
     if broken:
-        ledger.append(base, {"pass_id": pass_id, "invoker": invoker, "event": "reconciled",
-                             "reason": f"broke_{len(broken)}_stale_locks",
-                             "locks": [{"job": j, "reason": r} for j, r in broken]})
+        ledger.append(
+            base,
+            {
+                "pass_id": pass_id,
+                "invoker": invoker,
+                "event": "reconciled",
+                "reason": f"broke_{len(broken)}_stale_locks",
+                "locks": [{"job": j, "reason": r} for j, r in broken],
+            },
+        )
     recovered = _recover_stamps(jobs, rows)
     if recovered:
-        ledger.append(base, {"pass_id": pass_id, "invoker": invoker, "event": "reconciled",
-                             "reason": f"recovered_{len(recovered)}_stamps",
-                             "jobs": recovered})
+        ledger.append(
+            base,
+            {
+                "pass_id": pass_id,
+                "invoker": invoker,
+                "event": "reconciled",
+                "reason": f"recovered_{len(recovered)}_stamps",
+                "jobs": recovered,
+            },
+        )
         touched.extend(recovered)
     if touched:
         jobs = store.reload_merge(jobs, touched, base)
@@ -528,9 +602,13 @@ def _recover_stamps(jobs: dict, rows: List[dict]) -> List[str]:
             started_ts[wake] = _row_ts(row)
         elif event == "removed" and name:
             latest.pop(name, None)
-        elif (event == "finished" and wake and name in jobs
-              and row.get("state") in ledger.STATES
-              and row.get("state") not in ledger.UNSTAMPED_STATES):
+        elif (
+            event == "finished"
+            and wake
+            and name in jobs
+            and row.get("state") in ledger.STATES
+            and row.get("state") not in ledger.UNSTAMPED_STATES
+        ):
             latest[name] = row
     recovered: List[str] = []
     for name, row in latest.items():
@@ -546,21 +624,30 @@ def _recover_stamps(jobs: dict, rows: List[dict]) -> List[str]:
         prior = job.get("last_started_at")
         if prior and clock.parse_ts(started_at) <= clock.parse_ts(prior):
             continue
-        _stamp(job, row["wake_id"], started_at,
-               Outcome(row["state"], row.get("reason") or "recovered_from_ledger"),
-               _row_ts(row))
+        _stamp(
+            job,
+            row["wake_id"],
+            started_at,
+            Outcome(row["state"], row.get("reason") or "recovered_from_ledger"),
+            _row_ts(row),
+        )
         recovered.append(name)
     return recovered
 
 
-def _stamp(job: dict, wake_id: str, started_at: Optional[str], outcome: Outcome,
-           finished_at: Optional[str] = None, executed: bool = False) -> None:
+def _stamp(
+    job: dict,
+    wake_id: str,
+    started_at: Optional[str],
+    outcome: Outcome,
+    finished_at: Optional[str] = None,
+    executed: bool = False,
+) -> None:
     """A wake that MEASURED the clock stamps its own start unconditionally
     (an executed wake, or the row that records a backwards clock); a recovered
     or policy row only ever moves the stamp forward."""
     prior = job.get("last_started_at")
-    if started_at and (executed or not prior
-                       or clock.parse_ts(started_at) > clock.parse_ts(prior)):
+    if started_at and (executed or not prior or clock.parse_ts(started_at) > clock.parse_ts(prior)):
         job["last_started_at"] = started_at
     job["last_wake_id"] = wake_id
     job["last_finished_at"] = finished_at or clock.iso(clock.now_utc())
@@ -596,11 +683,29 @@ CARD_OPTIONS = (
 
 
 def _report_block(job: dict) -> dict:
+    """The job's report block, with the defaults filled in -- but ONLY for a
+    job that has one.
+
+    ``report`` is off until the operator sets it (README: ``report | off``,
+    and store.py: "every field is off or inert by default"). Merging
+    ``REPORT_DEFAULTS`` onto a stored ``None`` gave every job in the store
+    ``card_after: 3``, so three bad wakes raised a real owner-facing decision
+    card for a job nobody asked to be told about, and the pass then wrote that
+    invented block back into the spec. Measured 2026-09-19.
+
+    ``card_after: 0`` is what "no card sink" means everywhere else in this
+    file, so an unconfigured job gets exactly that. ``on`` is still filled in
+    because it only says WHICH outcomes a configured sink would carry, and the
+    relay channel from the environment is the operator's own opt-in, judged by
+    ``_notify`` rather than by the spec.
+    """
     block = job.get("report")
     merged = dict(store.REPORT_DEFAULTS)
     merged["on"] = list(store.REPORT_DEFAULTS["on"])  # type: ignore[arg-type]
-    if isinstance(block, dict):
-        merged.update(block)
+    if not isinstance(block, dict):
+        merged["card_after"] = 0
+        return merged
+    merged.update(block)
     return merged
 
 
@@ -617,8 +722,12 @@ def _sink_run(argv: List[str]) -> Tuple[Optional[int], str, str]:
     if resolved is None:
         return None, "", f"{argv[0]}_not_installed"
     try:
-        done = subprocess.run([resolved] + list(argv[1:]), stdin=subprocess.DEVNULL,
-                              capture_output=True, timeout=SINK_TIMEOUT_S)
+        done = subprocess.run(
+            [resolved] + list(argv[1:]),
+            stdin=subprocess.DEVNULL,
+            capture_output=True,
+            timeout=SINK_TIMEOUT_S,
+        )
     except subprocess.TimeoutExpired:
         return None, "", f"{argv[0]}_timed_out_after_{SINK_TIMEOUT_S:g}s"
     except OSError as exc:
@@ -630,11 +739,21 @@ def _sink_run(argv: List[str]) -> Tuple[Optional[int], str, str]:
     return done.returncode, out, ""
 
 
-def _report_error_row(base: Path, name: str, wake_id: str, pass_id: str, invoker: str,
-                      reason: str) -> None:
+def _report_error_row(
+    base: Path, name: str, wake_id: str, pass_id: str, invoker: str, reason: str
+) -> None:
     with contextlib.suppress(Exception):
-        ledger.append(base, {"wake_id": wake_id, "pass_id": pass_id, "invoker": invoker,
-                             "job": name, "event": "report_error", "reason": reason})
+        ledger.append(
+            base,
+            {
+                "wake_id": wake_id,
+                "pass_id": pass_id,
+                "invoker": invoker,
+                "job": name,
+                "event": "report_error",
+                "reason": reason,
+            },
+        )
 
 
 def _relay_line(name: str, outcome: Outcome) -> str:
@@ -652,8 +771,9 @@ def _send_relay(channel: str, name: str, outcome: Outcome) -> str:
         # rather than a guess -- and a row here is the only way an operator
         # ever learns that a channel they configured is posting nothing.
         return f"awrelay_nick_missing:{RELAY_NICK_ENV}"
-    _code, _out, problem = _sink_run(["awrelay", "send", channel, _relay_line(name, outcome),
-                                      "--kind", "finding"])
+    _code, _out, problem = _sink_run(
+        ["awrelay", "send", channel, _relay_line(name, outcome), "--kind", "finding"]
+    )
     return problem
 
 
@@ -662,10 +782,21 @@ def _raise_card(name: str, fails: int, outcome: Outcome) -> Tuple[Optional[str],
     stored id is what stops the next pass raising a second one."""
     if executors.which("awask") is None:
         return None, "awask_not_installed"
-    argv = ["awask", "ask", f"awrise: {name} has failed {fails} times in a row",
-            "--summary", _relay_line(name, outcome),
-            "--kind", "decision", "--agent", "awrise", "--default", "keep",
-            "--json", "--quiet"]
+    argv = [
+        "awask",
+        "ask",
+        f"awrise: {name} has failed {fails} times in a row",
+        "--summary",
+        _relay_line(name, outcome),
+        "--kind",
+        "decision",
+        "--agent",
+        "awrise",
+        "--default",
+        "keep",
+        "--json",
+        "--quiet",
+    ]
     for key, label, consequence in CARD_OPTIONS:
         argv += ["--option", f"{key}:{label}:{consequence}"]
     _code, out, problem = _sink_run(argv)
@@ -699,8 +830,9 @@ def read_card_answer(card_id: str) -> Tuple[Optional[str], str]:
     return str(answer).strip(), ""
 
 
-def _notify(base: Path, jobs: dict, name: str, wake_id: str, pass_id: str, invoker: str,
-            outcome: Outcome) -> dict:
+def _notify(
+    base: Path, jobs: dict, name: str, wake_id: str, pass_id: str, invoker: str, outcome: Outcome
+) -> dict:
     """Relay line and/or ONE card, after the row and the store are on disk."""
     job = jobs.get(name)
     if job is None:
@@ -716,8 +848,11 @@ def _notify(base: Path, jobs: dict, name: str, wake_id: str, pass_id: str, invok
         # that is silently dead, which is the exact failure the nick check
         # above exists to make impossible.
         problem = store.relay_channel_problem(channel)
-        problem = (f"relay_channel_refused:{problem}" if problem
-                   else _send_relay(str(channel), name, outcome))
+        problem = (
+            f"relay_channel_refused:{problem}"
+            if problem
+            else _send_relay(str(channel), name, outcome)
+        )
         if problem:
             _report_error_row(base, name, wake_id, pass_id, invoker, problem)
     card_after = report.get("card_after") or 0
@@ -742,11 +877,18 @@ def _notify(base: Path, jobs: dict, name: str, wake_id: str, pass_id: str, invok
         else:
             report["card_id"] = card_id
             with contextlib.suppress(Exception):
-                ledger.append(base, {"wake_id": wake_id, "pass_id": pass_id,
-                                     "invoker": invoker, "job": name,
-                                     "event": "card_raised",
-                                     "reason": f"consecutive_failures_{fails}",
-                                     "card_id": card_id})
+                ledger.append(
+                    base,
+                    {
+                        "wake_id": wake_id,
+                        "pass_id": pass_id,
+                        "invoker": invoker,
+                        "job": name,
+                        "event": "card_raised",
+                        "reason": f"consecutive_failures_{fails}",
+                        "card_id": card_id,
+                    },
+                )
     # The merge FIRST, the write SECOND: `report` is a spec block the operator
     # owns, so a pass that carried its in-memory copy across the merge would
     # revert an edit made while the job was running.
@@ -785,9 +927,17 @@ def apply_card_answer(base: Path, jobs: dict, name: str, pass_id: str, invoker: 
         disable = answer == "disable"
         report["card_id"] = f"kept:{card_id}"
         with contextlib.suppress(Exception):
-            ledger.append(base, {"pass_id": pass_id, "invoker": invoker, "job": name,
-                                 "event": "card_answered", "card_id": card_id,
-                                 "reason": f"answer_{answer}"})
+            ledger.append(
+                base,
+                {
+                    "pass_id": pass_id,
+                    "invoker": invoker,
+                    "job": name,
+                    "event": "card_answered",
+                    "card_id": card_id,
+                    "reason": f"answer_{answer}",
+                },
+            )
     jobs = store.reload_merge(jobs, [name], base)
     if name not in jobs:
         return jobs
@@ -799,9 +949,18 @@ def apply_card_answer(base: Path, jobs: dict, name: str, pass_id: str, invoker: 
     return jobs
 
 
-def _record(base: Path, jobs: dict, name: str, wake_id: str, pass_id: str, invoker: str,
-            outcome: Outcome, started_at: str, executed: bool,
-            measured: bool = False) -> dict:
+def _record(
+    base: Path,
+    jobs: dict,
+    name: str,
+    wake_id: str,
+    pass_id: str,
+    invoker: str,
+    outcome: Outcome,
+    started_at: str,
+    executed: bool,
+    measured: bool = False,
+) -> dict:
     """finished row -> jobs.json replace. That order is pinned on purpose.
 
     ``measured`` says ``started_at`` is this pass's own clock reading rather
@@ -815,17 +974,33 @@ def _record(base: Path, jobs: dict, name: str, wake_id: str, pass_id: str, invok
         duration = (clock.parse_ts(finished_at) - clock.parse_ts(started_at)).total_seconds()
     except (ValueError, TypeError):
         duration = None
-    row = {"wake_id": wake_id, "pass_id": pass_id, "invoker": invoker, "job": name,
-           "event": "finished", "state": outcome.state, "reason": outcome.reason,
-           "ts": finished_at, "exit_code": outcome.exit_code,
-           "duration_s": None if duration is None else round(duration, 3),
-           "stdout_tail": outcome.stdout_tail, "stderr_tail": outcome.stderr_tail,
-           "handoff_id": outcome.handoff_id, "child_pid": outcome.child_pid}
+    row = {
+        "wake_id": wake_id,
+        "pass_id": pass_id,
+        "invoker": invoker,
+        "job": name,
+        "event": "finished",
+        "state": outcome.state,
+        "reason": outcome.reason,
+        "ts": finished_at,
+        "exit_code": outcome.exit_code,
+        "duration_s": None if duration is None else round(duration, 3),
+        "stdout_tail": outcome.stdout_tail,
+        "stderr_tail": outcome.stderr_tail,
+        "handoff_id": outcome.handoff_id,
+        "child_pid": outcome.child_pid,
+    }
     if outcome.wake_unit:
         # Only a woken job carries these, so every row that was always written
         # is byte-identical to what it was before wakes existed.
-        row.update({"wake_unit": outcome.wake_unit, "wake_s": outcome.wake_s,
-                    "wake_state": outcome.wake_state, "park_state": outcome.park_state})
+        row.update(
+            {
+                "wake_unit": outcome.wake_unit,
+                "wake_s": outcome.wake_s,
+                "wake_state": outcome.wake_state,
+                "park_state": outcome.park_state,
+            }
+        )
     try:
         ledger.append(base, row)
     except OSError as exc:
@@ -851,8 +1026,16 @@ def _record(base: Path, jobs: dict, name: str, wake_id: str, pass_id: str, invok
     return _notify(base, jobs, name, wake_id, pass_id, invoker, outcome)
 
 
-def _execute(base: Path, jobs: dict, name: str, pass_id: str, invoker: str,
-             executor: Executor, reason: str, recheck: bool = False) -> Tuple[dict, Outcome]:
+def _execute(
+    base: Path,
+    jobs: dict,
+    name: str,
+    pass_id: str,
+    invoker: str,
+    executor: Executor,
+    reason: str,
+    recheck: bool = False,
+) -> Tuple[dict, Outcome]:
     """lock -> started row -> exec -> finished row -> jobs.json -> unlock.
 
     The lock is per job and is what makes "no double fire" a fact: a pass
@@ -864,31 +1047,52 @@ def _execute(base: Path, jobs: dict, name: str, pass_id: str, invoker: str,
     job = jobs[name]
     wake_id = ledger.new_id("w-")
     started_at = clock.iso(clock.now_utc())
-    handle = lock.acquire(base, name, {"wake_id": wake_id, "pass_id": pass_id,
-                                       "started_at": started_at}, job.get("timeout_s"))
+    handle = lock.acquire(
+        base,
+        name,
+        {"wake_id": wake_id, "pass_id": pass_id, "started_at": started_at},
+        job.get("timeout_s"),
+    )
     if isinstance(handle, lock.Held):
         outcome = Outcome("skipped_overlap", handle.reason)
-        return _record(base, jobs, name, wake_id, pass_id, invoker, outcome, started_at,
-                       executed=False), outcome
+        return _record(
+            base, jobs, name, wake_id, pass_id, invoker, outcome, started_at, executed=False
+        ), outcome
+    # A detached child outlives this pass, so the lock is NOT this pass's to
+    # release: releasing it is what let the next pass spawn a second copy.
+    keep_lock = False
     try:
         if recheck:
             fresh = store.load(base).get(name)
             if fresh is None:
                 outcome = Outcome("cancelled", "removed_during_pass")
-                return _record(base, jobs, name, wake_id, pass_id, invoker, outcome,
-                               started_at, executed=False), outcome
+                return _record(
+                    base, jobs, name, wake_id, pass_id, invoker, outcome, started_at, executed=False
+                ), outcome
             if fresh.get("last_wake_id") != job.get("last_wake_id"):
-                outcome = Outcome("skipped_overlap",
-                                  f"already_woken_by_{fresh.get('last_wake_id')}")
-                return _record(base, jobs, name, wake_id, pass_id, invoker, outcome,
-                               started_at, executed=False), outcome
+                outcome = Outcome(
+                    "skipped_overlap", f"already_woken_by_{fresh.get('last_wake_id')}"
+                )
+                return _record(
+                    base, jobs, name, wake_id, pass_id, invoker, outcome, started_at, executed=False
+                ), outcome
             job = jobs[name] = fresh
-        ledger.append(base, {"wake_id": wake_id, "pass_id": pass_id, "invoker": invoker,
-                             "job": name, "event": "started", "reason": reason,
-                             "ts": started_at, "run": job.get("run"),
-                             "timeout_s": job.get("timeout_s"), "detach": job.get("detach")})
-        wake = {"wake_id": wake_id, "pass_id": pass_id, "job": name,
-                "on_spawn": handle.note_child}
+        ledger.append(
+            base,
+            {
+                "wake_id": wake_id,
+                "pass_id": pass_id,
+                "invoker": invoker,
+                "job": name,
+                "event": "started",
+                "reason": reason,
+                "ts": started_at,
+                "run": job.get("run"),
+                "timeout_s": job.get("timeout_s"),
+                "detach": job.get("detach"),
+            },
+        )
+        wake = {"wake_id": wake_id, "pass_id": pass_id, "job": name, "on_spawn": handle.note_child}
         try:
             outcome = executor(job, wake)
         except Exception as exc:  # noqa: BLE001 - an executor that raises is still a wake to close
@@ -896,26 +1100,57 @@ def _execute(base: Path, jobs: dict, name: str, pass_id: str, invoker: str,
         if not isinstance(outcome, Outcome):
             outcome = Outcome("error", f"executor_returned_{type(outcome).__name__}")
         elif not isinstance(outcome.reason, str) or not outcome.reason.strip():
-            outcome = Outcome("error", f"executor_returned_empty_reason:{outcome.state}",
-                              exit_code=outcome.exit_code, stdout_tail=outcome.stdout_tail,
-                              stderr_tail=outcome.stderr_tail)
+            outcome = Outcome(
+                "error",
+                f"executor_returned_empty_reason:{outcome.state}",
+                exit_code=outcome.exit_code,
+                stdout_tail=outcome.stdout_tail,
+                stderr_tail=outcome.stderr_tail,
+            )
         if outcome.state not in ledger.STATES:
             # The executor is the one caller that may hand us garbage; the ledger
             # refuses it, and the wake must still be closed as an error.
             outcome = Outcome("error", f"executor_returned_unknown_state:{outcome.state}")
-        jobs = _record(base, jobs, name, wake_id, pass_id, invoker, outcome, started_at,
-                       executed=True)
+        if outcome.state == "detached" and int(handle.holder.get("child_pid") or 0) > 0:
+            # Only with a pid on record: a detached outcome whose child was
+            # never noted leaves a lock nothing can judge, and the age bound
+            # would be the only way out of it. Without the pid the ordinary
+            # release is the honest answer.
+            handle.mark_detached()
+            keep_lock = True
+        jobs = _record(
+            base, jobs, name, wake_id, pass_id, invoker, outcome, started_at, executed=True
+        )
         return jobs, outcome
     finally:
-        handle.release()
+        if not keep_lock:
+            handle.release()
 
 
-def _skip(base: Path, jobs: dict, name: str, pass_id: str, invoker: str,
-          state: str, reason: str, measured: bool = False) -> dict:
+def _skip(
+    base: Path,
+    jobs: dict,
+    name: str,
+    pass_id: str,
+    invoker: str,
+    state: str,
+    reason: str,
+    measured: bool = False,
+) -> dict:
     wake_id = ledger.new_id("w-")
     now = clock.iso(clock.now_utc())
-    return _record(base, jobs, name, wake_id, pass_id, invoker, Outcome(state, reason), now,
-                   executed=False, measured=measured)
+    return _record(
+        base,
+        jobs,
+        name,
+        wake_id,
+        pass_id,
+        invoker,
+        Outcome(state, reason),
+        now,
+        executed=False,
+        measured=measured,
+    )
 
 
 def _measured_gap_s(base: Path, now) -> Optional[float]:
@@ -950,9 +1185,15 @@ def _tick(base: Path, pass_id: str, invoker: str) -> Tuple[Optional[float], obje
     """
     now = clock.now_utc()
     gap = _measured_gap_s(base, now)
-    row = {"event": "tick", "reason": "pass_start", "pass_id": pass_id,
-           "invoker": invoker, "ts": clock.iso(now), "gap_s": gap,
-           "interpreter": sys.executable}
+    row = {
+        "event": "tick",
+        "reason": "pass_start",
+        "pass_id": pass_id,
+        "invoker": invoker,
+        "ts": clock.iso(now),
+        "gap_s": gap,
+        "interpreter": sys.executable,
+    }
     if gap is not None and gap < -hostclock.TICK_FUTURE_TOLERANCE_S:
         # A negative gap is not a short one: the previous tick is stamped after
         # this one, so the host clock moved. Recorded as measured AND marked,
@@ -974,14 +1215,27 @@ def new_counts() -> dict:
     return {"jobs": 0, "due": 0, "fired": 0, "skipped": 0, "overlapped": 0, "missed": 0}
 
 
-def _tick_end(base: Path, jobs: dict, pass_id: str, invoker: str,
-              gap: Optional[float], started, counts: dict) -> None:
+def _tick_end(
+    base: Path,
+    jobs: dict,
+    pass_id: str,
+    invoker: str,
+    gap: Optional[float],
+    started,
+    counts: dict,
+    reason: str = "pass_end",
+    extra: Optional[dict] = None,
+) -> None:
     """Close the pass. ``in_progress`` is why a quiet clock is not a dead one.
 
     A scheduler that refuses to start a second copy while the first is still
     running produces no new wake at all, so a 20-minute job looks exactly like
     a stopped clock. Counting the live locks here is what lets a later verdict
     tell those two apart.
+
+    ``reason`` and ``extra`` are how a pass that was REFUSED still closes its
+    own tick: the wake happened, it did no work, and a reader has to be able
+    to tell that from a pass that ran and found nothing due.
     """
     live = []
     for name, job in (jobs or {}).items():
@@ -991,18 +1245,54 @@ def _tick_end(base: Path, jobs: dict, pass_id: str, invoker: str,
         except OSError:
             continue
     now = clock.now_utc()
-    row = {"event": "tick_end", "reason": "pass_end", "pass_id": pass_id,
-           "invoker": invoker, "ts": clock.iso(now), "gap_s": gap,
-           "in_progress": len(live), "in_progress_jobs": sorted(live),
-           "duration_s": round((now - started).total_seconds(), 3)}
+    row = {
+        "event": "tick_end",
+        "reason": "pass_end",
+        "pass_id": pass_id,
+        "invoker": invoker,
+        "ts": clock.iso(now),
+        "gap_s": gap,
+        "in_progress": len(live),
+        "in_progress_jobs": sorted(live),
+        "duration_s": round((now - started).total_seconds(), 3),
+    }
     row.update(counts or new_counts())
+    row["reason"] = reason
+    row.update(extra or {})
     ledger.append(base, row)
+
+
+def _pass_bound_s(base: Path) -> float:
+    """How long a pass may hold the pass lock before it is judged stale.
+
+    The SUM of every job's timeout, not the largest: a pass runs its due jobs
+    one after another, so the largest is what one wake may take and a bound
+    that small breaks the lock of a pass doing exactly what it was told to --
+    which puts two passes in flight, the one thing the lock exists to stop.
+
+    A store that cannot be read gives the default. A guessed bound is still a
+    bound; a pass lock with none is held forever by the first killed pass.
+    """
+    try:
+        jobs = store.load(base)
+    except (store.StoreError, OSError):
+        return float(lock.DEFAULT_TIMEOUT_S)
+    total = 0.0
+    for job in (jobs or {}).values():
+        if not isinstance(job, dict):
+            continue
+        try:
+            total += float(job.get("timeout_s") or 0)
+        except (TypeError, ValueError):
+            continue
+    return min(max(total, float(lock.DEFAULT_TIMEOUT_S)), float(clock.MAX_TIMEOUT_S))
 
 
 def _draining(executor: Executor) -> Executor:
     """``--drain`` travels to the executor in the wake envelope, not in a
     module global: a flag stored on the module would be read by every
     concurrent pass in the same interpreter, including the self-test's."""
+
     def wrapped(job: dict, wake: dict) -> Outcome:
         return executor(job, {**wake, "drain": True})
 
@@ -1030,11 +1320,39 @@ def cmd_run_due(args, executor: Optional[Executor] = None) -> int:
         # is the claim that the clock fired a real pass, and the gap between two
         # of them is how a missed window is found), no lock, no stamp.
         return _dry_run_pass(base, pass_id, invoker, quiet)
+    # The tick is written BEFORE the pass lock is asked for, because the two
+    # rows answer different questions. The tick says the HOST CLOCK fired, and
+    # it fired whether or not this pass gets to do anything; taking the lock
+    # first would make a host whose every wake is refused look exactly like a
+    # host whose clock has stopped -- which is what `install --check` reads.
     gap, pass_started = _tick(base, pass_id, invoker)
+    held = lock.acquire_pass(
+        base, {"pass_id": pass_id, "invoker": invoker}, timeout_s=_pass_bound_s(base)
+    )
+    if isinstance(held, lock.Held):
+        # Refused, never queued: the previous pass is still doing the work, and
+        # a second one would re-fire its jobs or pile up behind it.
+        _tick_end(
+            base,
+            {},
+            pass_id,
+            invoker,
+            gap,
+            pass_started,
+            new_counts(),
+            reason="pass_refused_overlap",
+            extra={"refused": held.reason},
+        )
+        if not quiet:
+            print(f"refused: a run-due pass is already in flight ({held.reason})", file=sys.stderr)
+        return 0
     state: dict = {"jobs": {}, "counts": new_counts(), "gap": gap}
     try:
         return _run_due_pass(base, pass_id, invoker, executor, quiet, state)
     finally:
+        # Released FIRST: a `_tick_end` that raises must not leave the lock
+        # held, or one bad ledger write stops every later pass on the host.
+        held.release()
         _tick_end(base, state["jobs"], pass_id, invoker, gap, pass_started, state["counts"])
         keep = getattr(args, "prune", None)
         if keep:
@@ -1047,8 +1365,9 @@ def cmd_run_due(args, executor: Optional[Executor] = None) -> int:
                     print(f"pruned {len(removed)} ledger day file(s) older than {keep}")
 
 
-def _run_due_pass(base: Path, pass_id: str, invoker: str, executor: Executor,
-                  quiet: bool, state: dict) -> int:
+def _run_due_pass(
+    base: Path, pass_id: str, invoker: str, executor: Executor, quiet: bool, state: dict
+) -> int:
     jobs = state["jobs"] = store.load(base)
     jobs, closed, _live = reconcile(base, jobs, pass_id, invoker)
     state["jobs"] = jobs
@@ -1080,8 +1399,9 @@ def _run_due_pass(base: Path, pass_id: str, invoker: str, executor: Executor,
             # otherwise re-raise the same error on every pass until the
             # calendar passed its future stamp.
             worst = 1
-            jobs = state["jobs"] = _skip(base, jobs, name, pass_id, invoker, "error",
-                                         f"clock_skew:{skew:g}s", measured=True)
+            jobs = state["jobs"] = _skip(
+                base, jobs, name, pass_id, invoker, "error", f"clock_skew:{skew:g}s", measured=True
+            )
             print(f"  FAIL {name} error (clock_skew:{skew:g}s)", file=sys.stderr)
             job = jobs.get(name)
             if job is None:
@@ -1089,13 +1409,15 @@ def _run_due_pass(base: Path, pass_id: str, invoker: str, executor: Executor,
         elif not clock.is_due(job, now):
             continue
         if not job.get("enabled", True):
-            jobs = state["jobs"] = _skip(base, jobs, name, pass_id, invoker,
-                                         "skipped_disabled", "disabled")
+            jobs = state["jobs"] = _skip(
+                base, jobs, name, pass_id, invoker, "skipped_disabled", "disabled"
+            )
             counts["skipped"] += 1
             continue
         if not (job.get("run") or "").strip():
-            jobs = state["jobs"] = _skip(base, jobs, name, pass_id, invoker,
-                                         "skipped_empty", "empty_command")
+            jobs = state["jobs"] = _skip(
+                base, jobs, name, pass_id, invoker, "skipped_empty", "empty_command"
+            )
             counts["skipped"] += 1
             print(f"Skip {name}: empty", file=sys.stderr)
             continue
@@ -1109,9 +1431,15 @@ def _run_due_pass(base: Path, pass_id: str, invoker: str, executor: Executor,
                 # The windows are dropped, and the stamp moves so they are not
                 # re-found next pass. One row says how many were lost: a job
                 # that quietly resumes is a job nobody knows was asleep.
-                jobs = state["jobs"] = _skip(base, jobs, name, pass_id, invoker,
-                                             "skipped_missed",
-                                             f"missed_policy_skip:{windows}_windows")
+                jobs = state["jobs"] = _skip(
+                    base,
+                    jobs,
+                    name,
+                    pass_id,
+                    invoker,
+                    "skipped_missed",
+                    f"missed_policy_skip:{windows}_windows",
+                )
                 counts["skipped"] += 1
                 if not quiet:
                     print(f"  SKIPPED_MISSED {name} ({windows} window(s) dropped)")
@@ -1119,8 +1447,7 @@ def _run_due_pass(base: Path, pass_id: str, invoker: str, executor: Executor,
             reason = f"catch_up_once:{windows}_windows"
         if not quiet:
             print(f"Running {name}...")
-        jobs, outcome = _execute(base, jobs, name, pass_id, invoker, executor, reason,
-                                 recheck=True)
+        jobs, outcome = _execute(base, jobs, name, pass_id, invoker, executor, reason, recheck=True)
         state["jobs"] = jobs
         if outcome.state == "skipped_overlap":
             counts["overlapped"] += 1
@@ -1144,8 +1471,7 @@ def _run_due_pass(base: Path, pass_id: str, invoker: str, executor: Executor,
 MISSED_GAP_FACTOR = 2
 
 
-def _missed_windows_to_record(base: Path, name: str, job: dict, now,
-                              gap: Optional[float]) -> int:
+def _missed_windows_to_record(base: Path, name: str, job: dict, now, gap: Optional[float]) -> int:
     """Windows this pass may RECORD as lost -- 0 unless the record supports it.
 
     Arrears alone are not a lost window. Three things have to hold:
@@ -1181,8 +1507,16 @@ def _missed_windows_to_record(base: Path, name: str, job: dict, now,
     return windows
 
 
-def _missed_row(base: Path, name: str, job: dict, pass_id: str, invoker: str,
-                windows: int, gap: Optional[float], now) -> None:
+def _missed_row(
+    base: Path,
+    name: str,
+    job: dict,
+    pass_id: str,
+    invoker: str,
+    windows: int,
+    gap: Optional[float],
+    now,
+) -> None:
     """One row per job per pass for the windows that came and went.
 
     One row, never one per window: the point is that they were lost and how
@@ -1196,16 +1530,27 @@ def _missed_row(base: Path, name: str, job: dict, pass_id: str, invoker: str,
         reason = f"clock_gap:{gap:g}s"
     else:
         reason = f"clock_absent:{windows}_windows"
-    ledger.append(base, {"pass_id": pass_id, "invoker": invoker, "job": name,
-                         "event": "missed", "reason": reason, "windows": windows,
-                         "period_s": period, "policy": job.get("missed"),
-                         "due_at": clock.iso(clock.next_due(job, now)),
-                         "last_started_at": job.get("last_started_at"),
-                         "gap_s": gap})
+    ledger.append(
+        base,
+        {
+            "pass_id": pass_id,
+            "invoker": invoker,
+            "job": name,
+            "event": "missed",
+            "reason": reason,
+            "windows": windows,
+            "period_s": period,
+            "policy": job.get("missed"),
+            "due_at": clock.iso(clock.next_due(job, now)),
+            "last_started_at": job.get("last_started_at"),
+            "gap_s": gap,
+        },
+    )
 
 
-def _would_do(base: Path, name: str, job: dict, now,
-              gap: Optional[float] = None) -> Tuple[str, str]:
+def _would_do(
+    base: Path, name: str, job: dict, now, gap: Optional[float] = None
+) -> Tuple[str, str]:
     """(``would_fire`` | ``hold``, the reason) for one job, touching nothing.
 
     The tests this answer has to pass are the real pass's, in the real pass's
@@ -1258,16 +1603,25 @@ def _dry_run_pass(base: Path, pass_id: str, invoker: str, quiet: bool) -> int:
         verdict, reason = _would_do(base, name, job, now, gap)
         if verdict == "would_fire":
             would += 1
-            ledger.append(base, {"pass_id": pass_id, "invoker": invoker, "job": name,
-                                 "event": "finished", "state": "would_fire",
-                                 "reason": reason, "dry_run": True,
-                                 "missed_windows": clock.missed_windows(job, now)})
+            ledger.append(
+                base,
+                {
+                    "pass_id": pass_id,
+                    "invoker": invoker,
+                    "job": name,
+                    "event": "finished",
+                    "state": "would_fire",
+                    "reason": reason,
+                    "dry_run": True,
+                    "missed_windows": clock.missed_windows(job, now),
+                },
+            )
         if not quiet:
-            print(f"  {'WOULD FIRE' if verdict == 'would_fire' else 'hold      '} "
-                  f"{name} ({reason})")
+            print(
+                f"  {'WOULD FIRE' if verdict == 'would_fire' else 'hold      '} {name} ({reason})"
+            )
     if not quiet:
-        print(f"dry run: {would} of {len(jobs)} job(s) would fire; nothing ran, "
-              "no stamp moved")
+        print(f"dry run: {would} of {len(jobs)} job(s) would fire; nothing ran, no stamp moved")
     return 0
 
 
@@ -1288,8 +1642,9 @@ def cmd_run(args, executor: Optional[Executor] = None) -> int:
         print(f"{name} has an empty command", file=sys.stderr)
         return 1
     pass_id = ledger.new_id("p-")
-    _jobs, outcome = _execute(base, jobs, name, pass_id, "manual", executor,
-                              "forced" if force else "manual")
+    _jobs, outcome = _execute(
+        base, jobs, name, pass_id, "manual", executor, "forced" if force else "manual"
+    )
     line = f"{outcome.state} {name} ({outcome.reason})"
     if outcome.state in ledger.BAD_STATES:
         print(line, file=sys.stderr)
@@ -1301,6 +1656,7 @@ def cmd_run(args, executor: Optional[Executor] = None) -> int:
 
 
 # ------------------------------------------------------------ the record
+
 
 def cmd_history(args) -> int:
     base = store.home()
@@ -1316,8 +1672,9 @@ def cmd_history(args) -> int:
         for line in lines:
             print(line, file=sys.stderr if code else sys.stdout)
         return code
-    rows = ledger.read(base, since=since, job=getattr(args, "job", None),
-                       event=getattr(args, "event", None))
+    rows = ledger.read(
+        base, since=since, job=getattr(args, "job", None), event=getattr(args, "event", None)
+    )
     limit = getattr(args, "limit", 50)
     if limit and limit > 0:
         rows = rows[-limit:]
@@ -1335,9 +1692,11 @@ def cmd_history(args) -> int:
     print("-" * 100)
     for row in rows:
         ts = (row.get("ts") or "")[:19].replace("T", " ")
-        print(f"{ts:<20} {str(row.get('wake_id') or ''):<11} {str(row.get('job') or '-'):<18} "
-              f"{str(row.get('event')):<10} {str(row.get('state') or '-'):<18} "
-              f"{str(row.get('reason') or '')[:60]}")
+        print(
+            f"{ts:<20} {str(row.get('wake_id') or ''):<11} {str(row.get('job') or '-'):<18} "
+            f"{str(row.get('event')):<10} {str(row.get('state') or '-'):<18} "
+            f"{str(row.get('reason') or '')[:60]}"
+        )
     return 0
 
 
@@ -1405,8 +1764,9 @@ def cmd_explain(args) -> int:
     rows = ledger.read(base, since=since or timedelta(days=30))
     mine = [row for row in rows if row.get("job") == name]
     if job is None and not mine:
-        print(f"Not found: no job named {name!r} and no wake of that name on record",
-              file=sys.stderr)
+        print(
+            f"Not found: no job named {name!r} and no wake of that name on record", file=sys.stderr
+        )
         return 1
     now = clock.now_utc()
     print(f"job          {name}" + ("" if job else "  (removed -- explained from the ledger)"))
@@ -1414,24 +1774,36 @@ def cmd_explain(args) -> int:
         print(f"spec         {_spec_line(job)}")
         print(f"command      {job.get('run')}")
         due = clock.next_due(job, now)
-        print(f"last wake    {job.get('last_state') or 'never'}"
-              + (f" ({job.get('last_reason')}) at {job.get('last_started_at')}"
-                 if job.get("last_state") else "")
-              + (f", {job.get('consecutive_failures')} consecutive failure(s)"
-                 if job.get("consecutive_failures") else ""))
+        print(
+            f"last wake    {job.get('last_state') or 'never'}"
+            + (
+                f" ({job.get('last_reason')}) at {job.get('last_started_at')}"
+                if job.get("last_state")
+                else ""
+            )
+            + (
+                f", {job.get('consecutive_failures')} consecutive failure(s)"
+                if job.get("consecutive_failures")
+                else ""
+            )
+        )
         print(f"next due     {_due_phrase((due - now).total_seconds())} ({clock.iso(due)})")
         print(f"missed windows: {clock.missed_windows(job, now)}")
     ticks = [row for row in rows if row.get("event") == "tick"]
     if not ticks:
         print("last tick    none on record")
-        print("UNJUDGED: nothing has woken awrise in this window, so there is no last "
-              "pass to explain -- `awrise install --check` judges the host clock")
+        print(
+            "UNJUDGED: nothing has woken awrise in this window, so there is no last "
+            "pass to explain -- `awrise install --check` judges the host clock"
+        )
         return 2
     last_tick = ticks[-1]
     gap = last_tick.get("gap_s")
-    print(f"last tick    {(last_tick.get('ts') or '')[:19].replace('T', ' ')} "
-          f"pass {last_tick.get('pass_id')}"
-          + (f", {gap}s after the one before" if gap is not None else ""))
+    print(
+        f"last tick    {(last_tick.get('ts') or '')[:19].replace('T', ' ')} "
+        f"pass {last_tick.get('pass_id')}"
+        + (f", {gap}s after the one before" if gap is not None else "")
+    )
     in_pass = [row for row in mine if row.get("pass_id") == last_tick.get("pass_id")]
     if in_pass:
         print("verdict      the pass acted on this job:")
@@ -1449,8 +1821,10 @@ def cmd_explain(args) -> int:
             why = "it is disabled (and was not due, or the pass predates the change)"
         print(f"verdict      the pass wrote no row for this job: {why}")
         if job is not None:
-            print(f"             last start {job.get('last_started_at') or 'never'}, "
-                  f"window {clock.period_s(job):g}s")
+            print(
+                f"             last start {job.get('last_started_at') or 'never'}, "
+                f"window {clock.period_s(job):g}s"
+            )
     recent = [row for row in mine if row.get("event") in ("finished", "missed")][-5:]
     if recent:
         print(f"recent       {len(recent)} row(s), newest last:")
@@ -1475,8 +1849,9 @@ def _files_holding_open_wakes(base: Path) -> set:
     return holding
 
 
-def prune_ledger(base: Path, keep: str, dry_run: bool = False,
-                 force: bool = False) -> Tuple[List[Path], List[Path]]:
+def prune_ledger(
+    base: Path, keep: str, dry_run: bool = False, force: bool = False
+) -> Tuple[List[Path], List[Path]]:
     """Drop whole ledger day files older than ``keep``; returns (gone, spared).
 
     Day files are what make this an unlink instead of a rewrite: no line is
@@ -1508,8 +1883,9 @@ def cmd_prune(args) -> int:
     keep = getattr(args, "keep", None) or "30d"
     dry_run = getattr(args, "dry_run", False)
     try:
-        removed, spared = prune_ledger(base, keep, dry_run=dry_run,
-                                       force=getattr(args, "force", False))
+        removed, spared = prune_ledger(
+            base, keep, dry_run=dry_run, force=getattr(args, "force", False)
+        )
     except clock.ClockError:
         # A clock nobody can read is not a bad --keep. ClockError subclasses
         # ValueError, so the blanket clause below used to relabel an
@@ -1524,8 +1900,10 @@ def cmd_prune(args) -> int:
     for path in removed:
         print(f"{verb} {path.name}")
     for path in spared:
-        print(f"kept {path.name}: it holds a wake that was never closed "
-              "(`awrise reconcile` first, or --force)")
+        print(
+            f"kept {path.name}: it holds a wake that was never closed "
+            "(`awrise reconcile` first, or --force)"
+        )
     print(f"prune: {verb} {len(removed)} day file(s) older than {keep}; {kept} kept")
     return 0
 
@@ -1586,41 +1964,58 @@ def _judge_history(base: Path, since: Optional[timedelta]) -> Tuple[int, List[st
             young.append(f"{name}: window {int(period)}s, ledger holds {have}")
             continue
         judged += 1
-        stamps = sorted(clock.parse_ts(ts) for ts in
-                        (_row_ts(row) for row in rows
-                         if row.get("job") == name and row.get("event") == "started") if ts)
+        stamps = sorted(
+            clock.parse_ts(ts)
+            for ts in (
+                _row_ts(row)
+                for row in rows
+                if row.get("job") == name and row.get("event") == "started"
+            )
+            if ts
+        )
         if not stamps:
             worst = 1
-            lines.append(f"NOT OK  {name}: no wake in {span:.0f}s of ledger, window "
-                         f"{period:g}s -- enabled and never woken")
+            lines.append(
+                f"NOT OK  {name}: no wake in {span:.0f}s of ledger, window "
+                f"{period:g}s -- enabled and never woken"
+            )
             continue
         gaps = [(b - a).total_seconds() for a, b in zip(stamps, stamps[1:])]
         gaps.append((now - stamps[-1]).total_seconds())
         worst_gap = max(gaps)
         if period > 0 and worst_gap > period * DRIFT_FACTOR:
             worst = 1
-            lines.append(f"NOT OK  {name}: {len(stamps)} wake(s), worst gap {worst_gap:.0f}s "
-                         f"is more than {DRIFT_FACTOR}x the {period:g}s window")
+            lines.append(
+                f"NOT OK  {name}: {len(stamps)} wake(s), worst gap {worst_gap:.0f}s "
+                f"is more than {DRIFT_FACTOR}x the {period:g}s window"
+            )
         else:
-            lines.append(f"OK      {name}: {len(stamps)} wake(s), worst gap "
-                         f"{worst_gap:.0f}s within {DRIFT_FACTOR}x the {period:g}s window")
+            lines.append(
+                f"OK      {name}: {len(stamps)} wake(s), worst gap "
+                f"{worst_gap:.0f}s within {DRIFT_FACTOR}x the {period:g}s window"
+            )
     for line in young:
-        lines.append(f"UNJUDGED {line} -- less than 2x its own window, too young to tell "
-                     "an absence from a window that has not come round yet")
+        lines.append(
+            f"UNJUDGED {line} -- less than 2x its own window, too young to tell "
+            "an absence from a window that has not come round yet"
+        )
     if not judged:
-        return 2, [f"UNJUDGED: the ledger holds {have}, less than 2x the window of any "
-                   f"enabled job -- too young to tell an absence from a window that has "
-                   "not come round yet"] + lines
-    lines.append(("NOT OK" if worst else "OK")
-                 + f": {judged} of {len(enabled)} enabled job(s) judged over "
-                   f"{span:.0f}s of ledger"
-                 + (f"; {len(young)} too young to judge" if young else ""))
+        return 2, [
+            f"UNJUDGED: the ledger holds {have}, less than 2x the window of any "
+            f"enabled job -- too young to tell an absence from a window that has "
+            "not come round yet"
+        ] + lines
+    lines.append(
+        ("NOT OK" if worst else "OK") + f": {judged} of {len(enabled)} enabled job(s) judged over "
+        f"{span:.0f}s of ledger" + (f"; {len(young)} too young to judge" if young else "")
+    )
     return worst, lines
 
 
 def cmd_checks(args) -> int:
     """The in-brick gate: WL001-WL004, 0 clean / 1 violation / 2 unjudged."""
     from . import checks
+
     argv: List[str] = []
     if getattr(args, "since", None):
         argv += ["--since", args.since]
@@ -1653,8 +2048,7 @@ def cmd_status(args) -> int:
     now = clock.now_utc()
     bad: List[str] = []
     pending: List[str] = []
-    print(f"{'Name':<20} {'On':<3} {'Every':<8} {'State':<16} {'Fails':<5} "
-          f"{'Next due':<14} Reason")
+    print(f"{'Name':<20} {'On':<3} {'Every':<8} {'State':<16} {'Fails':<5} {'Next due':<14} Reason")
     print("-" * 96)
     for name, job in sorted(jobs.items()):
         state = job.get("last_state") or "pending"
@@ -1667,22 +2061,28 @@ def cmd_status(args) -> int:
         else:
             wait = (clock.next_due(job, now) - now).total_seconds()
             due = "now" if wait <= 0 else f"in {int(wait)}s"
-        print(f"{name:<20} {'yes' if job.get('enabled', True) else 'no':<3} "
-              f"{str(job.get('every')):<8} {state:<16} "
-              f"{int(job.get('consecutive_failures') or 0):<5} "
-              f"{due:<14} {(job.get('last_reason') or '')[:40]}")
+        print(
+            f"{name:<20} {'yes' if job.get('enabled', True) else 'no':<3} "
+            f"{str(job.get('every')):<8} {state:<16} "
+            f"{int(job.get('consecutive_failures') or 0):<5} "
+            f"{due:<14} {(job.get('last_reason') or '')[:40]}"
+        )
     stale = [w for w, row in opens.items() if not _wake_is_live(row)]
     if stale:
         print(f"{len(stale)} wake(s) started and never finished -- run `awrise reconcile`")
     if bad or stale:
-        print(f"NOT OK: {', '.join(bad) or 'no failing job'}"
-              + (f"; {len(stale)} orphan(s)" if stale else ""))
+        print(
+            f"NOT OK: {', '.join(bad) or 'no failing job'}"
+            + (f"; {len(stale)} orphan(s)" if stale else "")
+        )
         return 1
     if pending:
         # Per job, never per ledger: another job's rows say nothing about
         # this one, and a job that never woke cannot be called OK.
-        print(f"UNJUDGED: {', '.join(pending)} never woke -- nothing has run for "
-              f"{'it' if len(pending) == 1 else 'them'}, so nothing can be judged")
+        print(
+            f"UNJUDGED: {', '.join(pending)} never woke -- nothing has run for "
+            f"{'it' if len(pending) == 1 else 'them'}, so nothing can be judged"
+        )
         return 2
     print("OK: every job's last wake ended success or a policy skip")
     return 0
@@ -1702,10 +2102,14 @@ def _hostclock_note(base: Path) -> Optional[str]:
         return None
     parts = [f"host clock: {record.get('kind')} every {record.get('every_s')}s"]
     try:
-        age = hostclock.tick_age_s(base)
+        # SCHEDULED ticks only: a pass run by hand writes the same ledger row,
+        # so the unfiltered reading prints a fresh "last tick" for a clock that
+        # has never fired -- which is how this host reported health on a clock
+        # that did not exist.
+        age = hostclock.tick_age_s(base, hostclock.SCHEDULED_INVOKERS)
     except OSError:
         age = None
-    parts.append("last tick " + hostclock.tick_age_phrase(age))
+    parts.append("last scheduled tick " + hostclock.tick_age_phrase(age))
     python = record.get("python")
     if python and os.path.normcase(str(python)) != os.path.normcase(sys.executable):
         # The entry survives a venv rebuild; awrise inside it does not. Every
@@ -1730,28 +2134,189 @@ def cmd_install(args) -> int:
             print(line, file=sys.stderr if code else sys.stdout)
         return code
     if not kind:
-        raise FatalError(2, "name the host clock: --cron, --systemd-user, "
-                            "--systemd-system, --launchd or --schtasks "
-                            "(or --check to judge the one already installed)")
+        raise FatalError(
+            2,
+            "name the host clock: --cron, --systemd-user, "
+            "--systemd-system, --launchd or --schtasks "
+            "(or --check to judge the one already installed)",
+        )
     if getattr(args, "uninstall", False):
         entry = hostclock.uninstall(kind, base, dry_run=getattr(args, "dry_run", False))
         for line in entry.lines:
             print(line)
         return 0
     try:
-        every_s = int(clock.parse_interval(getattr(args, "every", None) or "60s")
-                      .total_seconds())
+        every_s = int(clock.parse_interval(getattr(args, "every", None) or "60s").total_seconds())
     except ValueError as exc:
         raise FatalError(2, f"--every: {exc}") from exc
-    entry = hostclock.install(kind, every_s=every_s,
-                              dry_run=getattr(args, "dry_run", False),
-                              print_only=getattr(args, "print_only", False),
-                              base=base)
+    entry = hostclock.install(
+        kind,
+        every_s=every_s,
+        dry_run=getattr(args, "dry_run", False),
+        print_only=getattr(args, "print_only", False),
+        base=base,
+    )
     for line in entry.lines:
         print(line)
     if entry.installed:
-        print(f"{kind} host clock installed and read back; "
-              f"`awrise install --check` judges whether it is ticking")
+        print(
+            f"{kind} host clock installed and read back; "
+            f"`awrise install --check` judges whether it is ticking"
+        )
+    return 0
+
+
+#: Which host clock each platform actually has, best first. `preflight` is the
+#: authority on whether one is usable HERE -- it is the same function the
+#: install refuses on, so the pick can never name a scheduler the install
+#: would then reject. Order matters on Linux: a user timer needs a session
+#: bus, and cron needs nothing, so cron is the honest fallback before the
+#: system-wide unit that needs root.
+NATIVE_CLOCKS = {
+    "nt": ("schtasks",),
+    "darwin": ("launchd",),
+    "posix": ("systemd-user", "cron", "systemd-system"),
+}
+
+
+def native_clock_kind() -> str:
+    """The host clock kind to register on THIS machine."""
+    if os.name == "nt":
+        order = NATIVE_CLOCKS["nt"]
+    elif sys.platform == "darwin":
+        order = NATIVE_CLOCKS["darwin"]
+    else:
+        order = NATIVE_CLOCKS["posix"]
+    for kind in order:
+        if hostclock.preflight(kind) is None:
+            return kind
+    return order[-1]
+
+
+def _clock_is_current(kind: str, every_s: int, base: Path) -> Tuple[bool, List[str]]:
+    """Is the entry this install would create ALREADY registered, from these
+    exact bytes and this exact interpreter?
+
+    This is what makes the verb idempotent in the way that matters. Re-running
+    `/create /f` also ends with a registered task, but it rewrites the payload
+    and resets the schedule on every call, so a repair loop that calls it each
+    pass can never be distinguished from one that found something wrong. A
+    second run that changes nothing must SAY it changed nothing.
+    """
+    record = hostclock.read_record(base)
+    if record is None:
+        return False, ["no install record: this awrise has registered no host clock"]
+    if record.get("kind") != kind:
+        return False, [f"the record holds {record.get('kind')}, not {kind}"]
+    try:
+        recorded_every = int(record.get("every_s") or 0)
+    except (TypeError, ValueError):
+        recorded_every = 0
+    if recorded_every != int(every_s):
+        return False, [f"the record asks for every {recorded_every}s, not {int(every_s)}s"]
+    python = str(record.get("python") or "")
+    if os.path.normcase(python) != os.path.normcase(sys.executable):
+        return False, [
+            f"the entry runs {python or 'an unrecorded interpreter'}, "
+            f"this awrise is {sys.executable}"
+        ]
+    ctx = hostclock.context(kind, base=base, every_s=int(every_s))
+    if record.get("artifacts") != hostclock.digest(hostclock.render(kind, ctx)):
+        return False, ["the payload this awrise renders is not the one on record"]
+    missing = hostclock.payloads_present(kind, ctx)
+    if missing:
+        return False, ["the registered payload is missing: " + ", ".join(missing)]
+    changed = hostclock.payloads_changed(kind, ctx, record)
+    if changed:
+        # Present is not current: the entry keeps firing a file something else
+        # rewrote, and every wake then dies before the ledger is opened.
+        return False, [
+            "the registered payload is not the file this awrise installed: " + ", ".join(changed)
+        ]
+    found = hostclock.probe(kind, ctx)
+    if not found.present:
+        return False, [f"the scheduler does not hold the entry ({found.detail})"]
+    if not found.enabled:
+        return False, [f"the entry is registered and DISABLED ({found.detail})"]
+    return True, [f"{kind} host clock already registered and read back ({found.detail})"]
+
+
+def _manual_install_lines(kind: str, every_s: int, base: Path) -> List[str]:
+    """The exact command to hand an operator when this process may not run it.
+
+    A create can be refused for a reason no code here can fix: an elevation
+    this session does not hold, a policy that owns the scheduler, a locked
+    crontab. "Install it yourself" is not an answer -- the command is, and it
+    has to be the same command this verb would have run, character for
+    character, or it is a guess about our own behaviour.
+    """
+    try:
+        planned = hostclock.install(kind, every_s=every_s, dry_run=True, base=base)
+    except hostclock.HostClockError as exc:
+        return [f"(the command to hand over could not be rendered: {exc})"]
+    lines = ["run this yourself -- from an ELEVATED shell if the refusal was a privilege:"]
+    lines.extend("  " + hostclock.quote_argv(argv) for argv in planned.commands)
+    lines.append(f"then `awrise install --{kind} --check` judges whether it ticks")
+    return lines
+
+
+def _print_boot_notes(kind: str, base: Path, every_s: int) -> None:
+    """Say where the at-startup entry stands, every time.
+
+    It is registered BEST EFFORT: `/sc onstart` needs elevation and `/sc
+    minute` does not (measured 2026-09-18 on this host), so an ordinary user
+    gets a clock that ticks while logged on and nothing after an unattended
+    reboot. A gap nobody prints is a gap discovered at the next reboot.
+    """
+    try:
+        ctx = hostclock.context(kind, base=base, every_s=every_s)
+        for line in hostclock.boot_entry_notes(kind, ctx):
+            print(line)
+    except hostclock.HostClockError as exc:
+        print(f"boot entry: UNJUDGED ({exc})")
+
+
+def cmd_install_clock(args) -> int:
+    """Register the host clock for this OS, idempotently.
+
+    0 = the clock is registered (found or created), 1 = a measured no, 2 =
+    could not judge. It exists beside `install` because `install` asks the
+    caller to already know which scheduler the host has, and the common case
+    is an operator who wants the clock RUNNING -- and, when the create is
+    refused, wants the one command that fixes it rather than a diagnosis.
+    """
+    base = store.home()
+    kind = getattr(args, "kind", None) or native_clock_kind()
+    try:
+        every_s = int(clock.parse_interval(getattr(args, "every", None) or "60s").total_seconds())
+    except ValueError as exc:
+        raise FatalError(2, f"--every: {exc}") from exc
+    blocked = hostclock.preflight(kind)
+    if blocked:
+        raise FatalError(2, f"cannot install a {kind} host clock here: {blocked}")
+    print(f"host clock: {kind} (this machine's)")
+    current, why = _clock_is_current(kind, every_s, base)
+    for line in why:
+        print(line)
+    if current and not getattr(args, "force", False):
+        print("nothing to do -- the clock is already registered (--force re-registers it)")
+        _print_boot_notes(kind, base, every_s)
+        return 0
+    try:
+        entry = hostclock.install(kind, every_s=every_s, base=base)
+    except hostclock.HostClockError:
+        # The refusal is printed by the dispatcher; what it does not know is
+        # what to DO about it, and that is the only line worth adding.
+        for line in _manual_install_lines(kind, every_s, base):
+            print(line, file=sys.stderr)
+        raise
+    for line in entry.lines:
+        print(line)
+    _print_boot_notes(kind, base, every_s)
+    print(
+        f"{kind} host clock installed and read back; "
+        f"`awrise install --check` judges whether it is ticking"
+    )
     return 0
 
 
@@ -1767,8 +2332,10 @@ def cmd_reconcile(args) -> int:
         # It refuses while anything readable is there, so it can only ever be
         # the last resort it is documented as.
         path = store.reset(base)
-        print(f"Reset {path}: the corrupt copy is parked under "
-              f"{(base / 'corrupt')}; the store is empty")
+        print(
+            f"Reset {path}: the corrupt copy is parked under "
+            f"{(base / 'corrupt')}; the store is empty"
+        )
         return 0
     jobs = store.load(base)
     _jobs, closed, live = reconcile(base, jobs, ledger.new_id("p-"), "manual")
@@ -1822,7 +2389,7 @@ def _slug(text: str) -> str:
     clean = clean.strip("-.")
     for prefix in NAME_PREFIXES:
         if clean.startswith(prefix):
-            clean = clean[len(prefix):]
+            clean = clean[len(prefix) :]
     return clean
 
 
@@ -1859,9 +2426,11 @@ def _first_use(record: dict, day) -> Tuple[Optional[object], str]:
     """
     days = record.get("days") if isinstance(record.get("days"), dict) else {}
     per_day = days.get(day.isoformat()) if isinstance(days.get(day.isoformat()), dict) else {}
-    for basis, value in (("first_request_at", record.get("first_request_at")),
-                         (f"days[{day.isoformat()}]", per_day.get("first_request_at")),
-                         ("last_request_at", record.get("last_request_at"))):
+    for basis, value in (
+        ("first_request_at", record.get("first_request_at")),
+        (f"days[{day.isoformat()}]", per_day.get("first_request_at")),
+        ("last_request_at", record.get("last_request_at")),
+    ):
         try:
             stamp = clock.parse_ts(value) if value else None
         except (ValueError, TypeError):
@@ -1871,14 +2440,32 @@ def _first_use(record: dict, day) -> Tuple[Optional[object], str]:
     return None, ""
 
 
-def prewarm_plan(directory: Path, day, jobs: dict, exclude: Optional[List[str]] = None,
-                 every: str = PREWARM_EVERY) -> Tuple[List[dict], List[dict]]:
-    """(proposals, skipped) for ``day``. Reads only; judges nothing live."""
+def prewarm_plan(
+    directory: Path,
+    day,
+    jobs: dict,
+    exclude: Optional[List[str]] = None,
+    every: str = PREWARM_EVERY,
+) -> Tuple[List[dict], List[dict]]:
+    """(proposals, skipped) for ``day``. Reads only; judges nothing live.
+
+    At most ONE proposal per job name. ``_slug`` strips the ``aither-`` /
+    ``aitheros-`` prefix as well as slugging, so two different units can slug
+    to the same name -- and ``--apply`` used to write both records under that
+    one key, silently keeping the last and reporting "added" for both. A name
+    already claimed by an earlier unit is a SKIP that names the collision:
+    which unit is not scheduled is the fact an operator has to be told.
+    """
     proposals: List[dict] = []
     skipped: List[dict] = []
+    claimed: Dict[str, str] = {}
     for path in sorted(directory.glob("*.json")):
-        def drop(why: str, name: str = path.name) -> None:
-            skipped.append({"source": name, "why": why})
+
+        def drop(why: str, name: str = path.name, refused: bool = False) -> None:
+            # `refused` marks a drop the operator has to act on (a collision),
+            # as against the ordinary ones (a unit nothing asked for that day).
+            skipped.append({"source": name, "why": why, "refused": refused})
+
         try:
             record = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, ValueError) as exc:
@@ -1901,15 +2488,33 @@ def prewarm_plan(directory: Path, day, jobs: dict, exclude: Optional[List[str]] 
             # nothing asked for yesterday gets no pre-warm today.
             drop(f"no request recorded on {day.isoformat()}")
             continue
-        name = f"prewarm-{_slug(unit[:-len(UNIT_SUFFIX)])}"[:store.NAME_MAX]
+        name = f"prewarm-{_slug(unit[: -len(UNIT_SUFFIX)])}"[: store.NAME_MAX]
         try:
             store.validate_name(name)
         except ValueError as exc:
             drop(f"{name!r} is not a usable job name: {exc}")
             continue
-        proposals.append({"job": name, "unit": unit, "unit_basis": unit_basis,
-                          "at": f"{stamp.hour:02d}:00", "every": every, "basis": basis,
-                          "first_use_at": clock.iso(stamp), "exists": name in jobs})
+        if name in claimed:
+            drop(
+                f"job name {name!r} is already proposed for {claimed[name]}, so {unit} "
+                f"would overwrite it -- one job cannot wake two units. Rename one of the "
+                f"units, or add a job for {unit} by hand",
+                refused=True,
+            )
+            continue
+        claimed[name] = unit
+        proposals.append(
+            {
+                "job": name,
+                "unit": unit,
+                "unit_basis": unit_basis,
+                "at": f"{stamp.hour:02d}:00",
+                "every": every,
+                "basis": basis,
+                "first_use_at": clock.iso(stamp),
+                "exists": name in jobs,
+            }
+        )
     return proposals, skipped
 
 
@@ -1924,18 +2529,28 @@ def cmd_prewarm(args) -> int:
     """
     directory = usage_ledger_dir(getattr(args, "ledger_dir", None))
     if directory is None:
-        raise FatalError(2, f"no usage ledger directory: set {USAGE_LEDGER_DIR_ENV} (or "
-                            f"{executors.UNIT_PLANE_DIR_ENV} / {executors.UNIT_LIBRARY_ENV}) "
-                            "-- a pre-warm with no usage truth would be a guess")
+        raise FatalError(
+            2,
+            f"no usage ledger directory: set {USAGE_LEDGER_DIR_ENV} (or "
+            f"{executors.UNIT_PLANE_DIR_ENV} / {executors.UNIT_LIBRARY_ENV}) "
+            "-- a pre-warm with no usage truth would be a guess",
+        )
     if not directory.is_dir():
-        raise FatalError(2, f"{directory} is not a directory -- an absent usage ledger is not "
-                            "an empty one, and nothing can be proposed from it")
+        raise FatalError(
+            2,
+            f"{directory} is not a directory -- an absent usage ledger is not "
+            "an empty one, and nothing can be proposed from it",
+        )
     back = max(1, int(getattr(args, "days_ago", 1) or 1))
     day = (clock.now_utc() - timedelta(days=back)).date()
     jobs = store.load()
-    proposals, skipped = prewarm_plan(directory, day, jobs,
-                                      exclude=list(getattr(args, "exclude", None) or []),
-                                      every=(getattr(args, "every", None) or PREWARM_EVERY))
+    proposals, skipped = prewarm_plan(
+        directory,
+        day,
+        jobs,
+        exclude=list(getattr(args, "exclude", None) or []),
+        every=(getattr(args, "every", None) or PREWARM_EVERY),
+    )
     apply = bool(getattr(args, "apply", False))
     allow_derived = bool(getattr(args, "allow_derived", False))
     run = getattr(args, "run", None) or PREWARM_RUN
@@ -1948,8 +2563,24 @@ def cmd_prewarm(args) -> int:
             if proposal["unit_basis"] != "declared" and not allow_derived:
                 # Refused, not skipped: a schedule keyed on a guessed unit name
                 # is a job that fails every night into a log nobody reads.
-                applied.append({"job": proposal["job"], "state": "refused:derived_unit",
-                                "unit": proposal["unit"]})
+                applied.append(
+                    {
+                        "job": proposal["job"],
+                        "state": "refused:derived_unit",
+                        "unit": proposal["unit"],
+                    }
+                )
+                continue
+            if proposal["job"] in jobs:
+                # Belt and braces for the collision guard in `prewarm_plan`:
+                # this loop must never be the thing that replaces a record.
+                applied.append(
+                    {
+                        "job": proposal["job"],
+                        "state": "refused:name_taken",
+                        "unit": proposal["unit"],
+                    }
+                )
                 continue
             job = store.new_job(every=proposal["every"], run=run, interval_s=0.0)
             job["at"] = proposal["at"]
@@ -1961,21 +2592,37 @@ def cmd_prewarm(args) -> int:
             applied.append({"job": proposal["job"], "state": "added"})
         if applied:
             store.save(jobs)
-    refused = [item for item in applied if item["state"] == "refused:derived_unit"]
+    refused = [item for item in applied if item["state"].startswith("refused:")]
+    # A collision is refused whether or not --apply was passed: the plan itself
+    # already names a unit nothing will wake.
+    collisions = [drop for drop in skipped if drop.get("refused")]
     if getattr(args, "json", False):
-        print(json.dumps({"ledger_dir": str(directory), "day": day.isoformat(),
-                          "applied": applied, "proposals": proposals, "skipped": skipped},
-                         indent=2, sort_keys=True))
-        return 1 if refused else 0
+        print(
+            json.dumps(
+                {
+                    "ledger_dir": str(directory),
+                    "day": day.isoformat(),
+                    "applied": applied,
+                    "proposals": proposals,
+                    "skipped": skipped,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 1 if refused or collisions else 0
     print(f"usage ledger: {directory}")
     print(f"first use on {day.isoformat()} (UTC)")
     for proposal in proposals:
         state = "exists " if proposal["exists"] else "propose"
-        print(f"  {state} {proposal['job']:<28} {proposal['unit']:<34} "
-              f"at {proposal['at']} every {proposal['every']}  "
-              f"basis={proposal['basis']} unit={proposal['unit_basis']}")
+        print(
+            f"  {state} {proposal['job']:<28} {proposal['unit']:<34} "
+            f"at {proposal['at']} every {proposal['every']}  "
+            f"basis={proposal['basis']} unit={proposal['unit_basis']}"
+        )
     for drop in skipped:
-        print(f"  skip    {drop['source']:<28} {drop['why']}")
+        label = "REFUSE " if drop.get("refused") else "skip   "
+        print(f"  {label} {drop['source']:<28} {drop['why']}")
     if not proposals:
         print("Nothing to pre-warm: no ledger entry names a request on that day.")
     elif not apply:
@@ -1984,13 +2631,22 @@ def cmd_prewarm(args) -> int:
         added = sum(1 for item in applied if item["state"] == "added")
         print(f"{added} job(s) added, {len(applied) - added - len(refused)} already present")
     if refused:
-        print(f"{len(refused)} proposal(s) NOT scheduled: the unit name is derived from the "
-              f"service name, and nothing measured it. Name the unit in the ledger record, "
-              f"add the job by hand, or rerun with --allow-derived-units.")
-    return 1 if refused else 0
+        print(
+            f"{len(refused)} proposal(s) NOT scheduled: the unit name is derived from the "
+            f"service name, and nothing measured it. Name the unit in the ledger record, "
+            f"add the job by hand, or rerun with --allow-derived-units."
+        )
+    if collisions:
+        print(
+            f"{len(collisions)} unit(s) NOT scheduled: their job name is already taken by "
+            f"another unit, and one job cannot wake two. Nothing pre-warms them until a "
+            f"unit is renamed or a job is added by hand."
+        )
+    return 1 if refused or collisions else 0
 
 
 # ------------------------------------------------------------------- main
+
 
 def _build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="awrise", description="Wake something on a schedule")
@@ -2007,33 +2663,74 @@ def _build_parser() -> argparse.ArgumentParser:
     add_p.add_argument("--at", default=None, help="HH:MM UTC daily anchor")
     add_p.add_argument("--allow-overrun", action="store_true")
     add_p.add_argument("--disabled", action="store_true")
-    add_p.add_argument("--detach", action="store_true",
-                       help="spawn and close the wake at once; the child outlives the pass")
-    add_p.add_argument("--missed", default=None, choices=list(store.MISSED_POLICIES),
-                       help="windows lost while nothing ran: catch_up_once (default) "
-                            "runs it one more time, skip drops them")
-    add_p.add_argument("--executor", default=None, choices=list(executors.KINDS),
-                       help="how the wake runs (default shell)")
-    add_p.add_argument("--bearer-file", dest="bearer_file", default=None,
-                       help="file holding the token for an http/session job; must live "
-                            "under ~/.aither or $AWRISE_HOME")
-    add_p.add_argument("--permission-mode", dest="permission_mode", default=None,
-                       choices=list(executors.PERMISSION_MODES),
-                       help="session jobs only; anything outside this list is refused")
-    add_p.add_argument("--wake", default=None, metavar="UNIT.service",
-                       help="ask the host unit agent to wake this unit before the job runs, "
-                            "and wait for it to be healthy")
-    add_p.add_argument("--park-after", dest="park_after", action="store_true",
-                       help="with --wake: ask for the unit to be put back to sleep when the "
-                            "job is done (refused with --detach)")
-    add_p.add_argument("--wake-not-required", dest="wake_not_required", action="store_true",
-                       help="with --wake: run the command even when the wake failed "
-                            "(default: a failed wake means the command does not run)")
-    add_p.add_argument("--report-relay", dest="report_relay", default=None, metavar="#CHANNEL",
-                       help="post a line to this relay channel when a wake ends badly")
-    add_p.add_argument("--card-after", dest="card_after", type=int, default=None,
-                       metavar="N", help="raise ONE decision card after N consecutive "
-                                         "bad wakes (0 = never)")
+    add_p.add_argument(
+        "--detach",
+        action="store_true",
+        help="spawn and close the wake at once; the child outlives the pass",
+    )
+    add_p.add_argument(
+        "--missed",
+        default=None,
+        choices=list(store.MISSED_POLICIES),
+        help="windows lost while nothing ran: catch_up_once (default) "
+        "runs it one more time, skip drops them",
+    )
+    add_p.add_argument(
+        "--executor",
+        default=None,
+        choices=list(executors.KINDS),
+        help="how the wake runs (default shell)",
+    )
+    add_p.add_argument(
+        "--bearer-file",
+        dest="bearer_file",
+        default=None,
+        help="file holding the token for an http/session job; must live "
+        "under ~/.aither or $AWRISE_HOME",
+    )
+    add_p.add_argument(
+        "--permission-mode",
+        dest="permission_mode",
+        default=None,
+        choices=list(executors.PERMISSION_MODES),
+        help="session jobs only; anything outside this list is refused",
+    )
+    add_p.add_argument(
+        "--wake",
+        default=None,
+        metavar="UNIT.service",
+        help="ask the host unit agent to wake this unit before the job runs, "
+        "and wait for it to be healthy",
+    )
+    add_p.add_argument(
+        "--park-after",
+        dest="park_after",
+        action="store_true",
+        help="with --wake: ask for the unit to be put back to sleep when the "
+        "job is done (refused with --detach)",
+    )
+    add_p.add_argument(
+        "--wake-not-required",
+        dest="wake_not_required",
+        action="store_true",
+        help="with --wake: run the command even when the wake failed "
+        "(default: a failed wake means the command does not run)",
+    )
+    add_p.add_argument(
+        "--report-relay",
+        dest="report_relay",
+        default=None,
+        metavar="#CHANNEL",
+        help="post a line to this relay channel when a wake ends badly",
+    )
+    add_p.add_argument(
+        "--card-after",
+        dest="card_after",
+        type=int,
+        default=None,
+        metavar="N",
+        help="raise ONE decision card after N consecutive bad wakes (0 = never)",
+    )
     add_p.set_defaults(func=cmd_add)
 
     set_p = subs.add_parser("set", help="change a job's spec: key=value ...")
@@ -2057,15 +2754,24 @@ def _build_parser() -> argparse.ArgumentParser:
 
     run_p = subs.add_parser("run-due", help="one pass: run every due job, then exit")
     run_p.add_argument("--quiet", action="store_true")
-    run_p.add_argument("--invoker", default="manual",
-                       help="who fired the pass (cron, systemd, ...)")
-    run_p.add_argument("--dry-run", action="store_true",
-                       help="say what would fire (would_fire rows); run nothing")
-    run_p.add_argument("--prune", default=None, metavar="WINDOW",
-                       help="after the pass, drop ledger day files older than this")
-    run_p.add_argument("--drain", action="store_true",
-                       help="awrun jobs only: after submitting, also claim and run THAT "
-                            "item -- never another actor's queued work")
+    run_p.add_argument(
+        "--invoker", default="manual", help="who fired the pass (cron, systemd, ...)"
+    )
+    run_p.add_argument(
+        "--dry-run", action="store_true", help="say what would fire (would_fire rows); run nothing"
+    )
+    run_p.add_argument(
+        "--prune",
+        default=None,
+        metavar="WINDOW",
+        help="after the pass, drop ledger day files older than this",
+    )
+    run_p.add_argument(
+        "--drain",
+        action="store_true",
+        help="awrun jobs only: after submitting, also claim and run THAT "
+        "item -- never another actor's queued work",
+    )
     run_p.set_defaults(func=cmd_run_due)
 
     one_p = subs.add_parser("run", help="run one job now, due or not")
@@ -2079,9 +2785,12 @@ def _build_parser() -> argparse.ArgumentParser:
     hist_p.add_argument("--event", default=None)
     hist_p.add_argument("--limit", type=int, default=50, help="0 = all")
     hist_p.add_argument("--json", action="store_true")
-    hist_p.add_argument("--judge", action="store_true",
-                        help="verdict instead of rows: drift or absence per job; "
-                             "exit 2 on a ledger too young to judge")
+    hist_p.add_argument(
+        "--judge",
+        action="store_true",
+        help="verdict instead of rows: drift or absence per job; "
+        "exit 2 on a ledger too young to judge",
+    )
     hist_p.set_defaults(func=cmd_history)
 
     status_p = subs.add_parser("status", help="per-job verdict; exit 1 on a failing job")
@@ -2095,59 +2804,121 @@ def _build_parser() -> argparse.ArgumentParser:
     prune_p = subs.add_parser("prune", help="drop ledger day files older than a window")
     prune_p.add_argument("--keep", default="30d", help="window to keep (default 30d)")
     prune_p.add_argument("--dry-run", action="store_true", help="name them, remove none")
-    prune_p.add_argument("--force", action="store_true",
-                         help="also drop a file holding a wake that was never closed")
+    prune_p.add_argument(
+        "--force", action="store_true", help="also drop a file holding a wake that was never closed"
+    )
     prune_p.set_defaults(func=cmd_prune)
 
-    pre_p = subs.add_parser("prewarm", help="propose one daily wake per unit the usage "
-                                            "ledger saw yesterday (prints; --apply schedules)")
-    pre_p.add_argument("--ledger-dir", dest="ledger_dir", default=None,
-                       help=f"usage ledger directory (default ${USAGE_LEDGER_DIR_ENV})")
-    pre_p.add_argument("--days-ago", dest="days_ago", type=int, default=1,
-                       help="which day's usage to read (1 = yesterday, the default)")
+    pre_p = subs.add_parser(
+        "prewarm",
+        help="propose one daily wake per unit the usage "
+        "ledger saw yesterday (prints; --apply schedules)",
+    )
+    pre_p.add_argument(
+        "--ledger-dir",
+        dest="ledger_dir",
+        default=None,
+        help=f"usage ledger directory (default ${USAGE_LEDGER_DIR_ENV})",
+    )
+    pre_p.add_argument(
+        "--days-ago",
+        dest="days_ago",
+        type=int,
+        default=1,
+        help="which day's usage to read (1 = yesterday, the default)",
+    )
     pre_p.add_argument("--every", default=PREWARM_EVERY, help="interval of a proposed job")
-    pre_p.add_argument("--run", default=None,
-                       help=f"command each proposed job runs (default {PREWARM_RUN!r} under "
-                            f"the {PREWARM_EXECUTOR} executor -- the wake IS the work)")
-    pre_p.add_argument("--exclude", action="append", default=None, metavar="GLOB",
-                       help="skip units matching this glob (repeatable)")
-    pre_p.add_argument("--park-after", dest="park_after", action="store_true",
-                       help="proposed jobs also park the unit when they are done")
+    pre_p.add_argument(
+        "--run",
+        default=None,
+        help=f"command each proposed job runs (default {PREWARM_RUN!r} under "
+        f"the {PREWARM_EXECUTOR} executor -- the wake IS the work)",
+    )
+    pre_p.add_argument(
+        "--exclude",
+        action="append",
+        default=None,
+        metavar="GLOB",
+        help="skip units matching this glob (repeatable)",
+    )
+    pre_p.add_argument(
+        "--park-after",
+        dest="park_after",
+        action="store_true",
+        help="proposed jobs also park the unit when they are done",
+    )
     pre_p.add_argument("--apply", action="store_true", help="actually add the proposed jobs")
-    pre_p.add_argument("--allow-derived-units", dest="allow_derived", action="store_true",
-                       help="with --apply: also add jobs whose unit name was DERIVED from the "
-                            "service name rather than declared by the ledger record (a guess; "
-                            "refused by default, and the exit code is 1 when any was refused)")
+    pre_p.add_argument(
+        "--allow-derived-units",
+        dest="allow_derived",
+        action="store_true",
+        help="with --apply: also add jobs whose unit name was DERIVED from the "
+        "service name rather than declared by the ledger record (a guess; "
+        "refused by default, and the exit code is 1 when any was refused)",
+    )
     pre_p.add_argument("--json", action="store_true")
     pre_p.set_defaults(func=cmd_prewarm)
 
     chk_p = subs.add_parser("checks", help="WL001-WL004 against the record")
     chk_p.add_argument("--since", default=None, help="ledger window to read (default 7d)")
     chk_p.add_argument("--json", action="store_true")
-    chk_p.add_argument("--self-test", dest="self_test", action="store_true",
-                       help="prove each rule can still fail")
+    chk_p.add_argument(
+        "--self-test", dest="self_test", action="store_true", help="prove each rule can still fail"
+    )
     chk_p.set_defaults(func=cmd_checks)
 
     inst_p = subs.add_parser("install", help="register the host clock that runs run-due")
     kinds = inst_p.add_mutually_exclusive_group()
     for flag in hostclock.KINDS:
-        kinds.add_argument(f"--{flag}", dest="kind", action="store_const", const=flag,
-                           help=f"use the {flag} scheduler")
+        kinds.add_argument(
+            f"--{flag}",
+            dest="kind",
+            action="store_const",
+            const=flag,
+            help=f"use the {flag} scheduler",
+        )
     inst_p.add_argument("--every", default="60s", help="how often the clock wakes run-due")
-    inst_p.add_argument("--print", dest="print_only", action="store_true",
-                        help="render the entry to stdout and touch nothing")
-    inst_p.add_argument("--dry-run", action="store_true",
-                        help="name every file and command, run none of them")
-    inst_p.add_argument("--check", action="store_true",
-                        help="0 installed and ticking, 1 a measured no, 2 unjudged")
+    inst_p.add_argument(
+        "--print",
+        dest="print_only",
+        action="store_true",
+        help="render the entry to stdout and touch nothing",
+    )
+    inst_p.add_argument(
+        "--dry-run", action="store_true", help="name every file and command, run none of them"
+    )
+    inst_p.add_argument(
+        "--check", action="store_true", help="0 installed and ticking, 1 a measured no, 2 unjudged"
+    )
     inst_p.add_argument("--uninstall", action="store_true", help="remove what we installed")
     inst_p.set_defaults(func=cmd_install, kind=None)
 
+    ic_p = subs.add_parser("install-clock", help="register THIS machine's host clock, idempotently")
+    ic_kinds = ic_p.add_mutually_exclusive_group()
+    for flag in hostclock.KINDS:
+        ic_kinds.add_argument(
+            f"--{flag}",
+            dest="kind",
+            action="store_const",
+            const=flag,
+            help=f"use the {flag} scheduler instead of this OS's default",
+        )
+    ic_p.add_argument("--every", default="60s", help="how often the clock wakes run-due")
+    ic_p.add_argument(
+        "--force",
+        action="store_true",
+        help="re-register even when the entry on record is already current",
+    )
+    ic_p.set_defaults(func=cmd_install_clock, kind=None)
+
     rec_p = subs.add_parser("reconcile", help="close orphaned wakes; --restore brings back .bak")
     rec_p.add_argument("--restore", action="store_true")
-    rec_p.add_argument("--reset", action="store_true",
-                       help="last resort: park a corrupt store that has no .bak and start "
-                            "an empty one (refused while anything readable is there)")
+    rec_p.add_argument(
+        "--reset",
+        action="store_true",
+        help="last resort: park a corrupt store that has no .bak and start "
+        "an empty one (refused while anything readable is there)",
+    )
     rec_p.set_defaults(func=cmd_reconcile)
     return parser
 
@@ -2190,6 +2961,15 @@ def _dispatch(func, args) -> int:
     except OSError as exc:
         print(f"NOT VERIFIED: {exc}", file=sys.stderr)
         return 2
+    finally:
+        # A 0.1.0 store can hold a job name this version cannot use as a lock
+        # directory. The migration RENAMES it rather than refusing -- refusing
+        # made every verb exit 2 forever with both documented escapes also
+        # refusing -- so the rename is said out loud. On stderr, after the
+        # verb, so `list --json` stays machine-readable.
+        for note in store.MIGRATION_NOTES:
+            print(f"NOTE: {note}", file=sys.stderr)
+        store.MIGRATION_NOTES.clear()
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -2197,6 +2977,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     _dv = locals().get("argv")
     if (_dv if _dv is not None else __import__("sys").argv[1:])[:1] == ["doctor"]:
         from ._doctor import report
+
         return report()
     # GENERATED repo-state intercept (gen_aw_doctor.py) -- do not edit
     try:
@@ -2216,6 +2997,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     stop = next((i for i, item in enumerate(argv) if not item.startswith("-")), len(argv))
     if "--self-test" in argv[:stop]:
         from .selftest import run
+
         return run(list_only="--list" in argv)
 
     parser = _build_parser()

@@ -27,6 +27,7 @@ Python 3.10 or newer. Linux, macOS and Windows.
 
 ```bash
 awrise add --name backup --every 1h --run "rsync -a src/ dest/"
+awrise install-clock        # register THIS machine's scheduler, idempotently
 awrise install --cron       # or --systemd-user / --systemd-system / --launchd / --schtasks
 awrise install --check      # 0 installed and ticking, 1 a measured no, 2 unjudged
 awrise history              # what happened to every wake and why
@@ -36,6 +37,22 @@ awrise status               # per-job verdict; exit 1 on a failing job
 `install` writes nothing until you ask it to: `--print` renders the entry to stdout,
 `--dry-run` names every file and command it would touch, and an install is reported as
 successful only after it has been **read back** from the scheduler.
+
+`install-clock` is `install` for an operator who does not want to know which scheduler
+the host has: it picks the native one, refuses to run twice (a second call that finds
+the same entry, the same interval, the same interpreter and the same payload bytes says
+so and changes nothing), and when the scheduler refuses the create it prints the exact
+command to run from an elevated shell rather than a diagnosis.
+
+On Windows the two entries it registers are not equal: the repeating one registers for
+an ordinary user, and the at-startup one needs elevation. A refused at-startup entry
+therefore does NOT cost the host its clock -- the repeating entry is installed, and the
+gap (no wake after an unattended reboot, until somebody logs on) is printed by
+`install-clock`, `install --check` and `doctor` on every run, with its one-line fix.
+
+**A pass you ran by hand is not the clock ticking.** Every adapter launches
+`run-due --invoker <kind>`, and freshness is judged on those rows only: a ledger full of
+hand-run passes reads as a clock that has never fired, which is what it is.
 
 ## Commands
 
@@ -55,6 +72,7 @@ successful only after it has been **read back** from the scheduler.
 | `prewarm [--apply] [--json] [--ledger-dir D] [--exclude GLOB] [--park-after] [--allow-derived-units]` | read the usage ledger and propose one daily wake per unit something asked for yesterday; prints, and schedules nothing without `--apply` |
 | `prune [--keep 30d] [--dry-run] [--force]` | drop ledger day files older than a window |
 | `install [--cron\|--systemd-user\|--systemd-system\|--launchd\|--schtasks] [--every 1m] [--print] [--dry-run] [--check] [--uninstall]` | register (or judge, or remove) the host clock that runs `run-due` |
+| `install-clock [--every 5m] [--force]` | register THIS machine's host clock, idempotently; on a refusal it prints the exact command to run elevated |
 | `reconcile [--restore] [--reset]` | close orphaned wakes and break dead locks; `--restore` brings back the backup store |
 | `doctor` | what of the aw* family is installed, and the one thing to fix |
 
@@ -70,9 +88,9 @@ Every command exits **0 clean, 1 a measured no, 2 could not judge** -- never 0 o
 | `run` | required | the command; empty is refused at `add` time, not skipped at run time |
 | `timeout_s` | `300` | the whole process tree is killed at the bound, on POSIX and on Windows |
 | `cwd` | none | the only environment knob; a missing directory is an `error` row, not a crash |
-| `at` | none | `HH:MM` UTC daily anchor: due is the next anchor after the last start, so a laptop asleep at 07:00 catches up once and re-anchors instead of walking later every day |
+| `at` | none | `HH:MM` UTC daily anchor: due is the next anchor after the last start — or, until it has ever run, after it was added — so a job added at 14:00 waits for 03:00 and a laptop asleep at 07:00 catches up once and re-anchors instead of walking later every day |
 | `missed` | `catch_up_once` | windows lost while nothing ran: catch up exactly once, or `skip` them |
-| `detach` | `false` | spawn and close the wake at once; the child outlives the pass |
+| `detach` | `false` | spawn and close the wake at once; the child outlives the pass, and keeps the job's lock until it exits — so the overlap rule below holds for it too |
 | `enabled` | `true` | a disabled job still leaves a row when it comes due |
 | `executor` | `shell` | `python`, `http`, `awrun`, `agent` and `session` are optional, and import nothing until a job names them |
 | `wake` | none | a unit to wake before the job runs and wait for; the wake is measured and recorded (`--wake my-model.service`) |
@@ -219,6 +237,7 @@ list below is the output of `awrise --self-test --list` and must stay equal to i
 - `install_print_and_dry_run_touch_nothing`
 - `install_check_is_unjudged_without_a_record_and_red_without_the_payload`
 - `install_refuses_to_claim_an_entry_it_cannot_read_back`
+- `doctor_never_exits_zero_while_printing_a_measured_no`
 - `every_pass_records_a_tick_with_the_gap_since_the_last_one`
 - `explain_reports_overdue_windows`
 - `missed_windows_are_one_row_and_one_catch_up_fire`
