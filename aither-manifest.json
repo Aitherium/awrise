@@ -1,0 +1,20 @@
+{
+  "schemaVersion": "1",
+  "name": "awrise",
+  "description": "Wake an agent on a schedule, let it do one thing, and put it back to sleep.",
+  "url": "https://aitherium.github.io/awrise/",
+  "repository": "https://github.com/Aitherium/awrise",
+  "kind": "tool",
+  "status": "public",
+  "adopt": "Wake something on a schedule, let it do one thing, and put it back to sleep.",
+  "pairs_with": [
+    "awdk",
+    "awrun",
+    "awrelay",
+    "awm",
+    "awask",
+    "awdesk",
+    "awsh"
+  ],
+  "includes": []
+}

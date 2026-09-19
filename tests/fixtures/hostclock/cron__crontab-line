@@ -1,0 +1,1 @@
+*/1 * * * * AWRISE_HOME="/home/ada/.aither/awrise" /usr/bin/python3 -m awrise run-due --quiet --invoker cron >>"/home/ada/.aither/awrise/logs/run-due.log" 2>&1 # awrise

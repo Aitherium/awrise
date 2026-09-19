@@ -1,0 +1,32 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<!-- awrise-generated 0.2.0 - rewritten by `awrise install`; do not edit. -->
+<dict>
+  <key>Label</key>
+  <string>com.aitherium.awrise</string>
+  <key>ProgramArguments</key>
+  <array>
+    <string>/usr/bin/python3</string>
+    <string>-m</string>
+    <string>awrise</string>
+    <string>run-due</string>
+    <string>--quiet</string>
+    <string>--invoker</string>
+    <string>launchd</string>
+  </array>
+  <key>EnvironmentVariables</key>
+  <dict>
+    <key>AWRISE_HOME</key>
+    <string>/home/ada/.aither/awrise</string>
+  </dict>
+  <key>StartInterval</key>
+  <integer>60</integer>
+  <key>RunAtLoad</key>
+  <true/>
+  <key>StandardOutPath</key>
+  <string>/home/ada/.aither/awrise/logs/run-due.log</string>
+  <key>StandardErrorPath</key>
+  <string>/home/ada/.aither/awrise/logs/run-due.log</string>
+</dict>
+</plist>

@@ -1,0 +1,2 @@
+schtasks.exe /create /f /tn awrise /sc minute /mo 1 /rl limited /tr wscript.exe //B //Nologo "C:\aw\bin\run-hidden.vbs" "C:\aw\bin\run-due.cmd"
+schtasks.exe /create /f /tn awrise-boot /sc onstart /rl limited /tr wscript.exe //B //Nologo "C:\aw\bin\run-hidden.vbs" "C:\aw\bin\run-due.cmd"

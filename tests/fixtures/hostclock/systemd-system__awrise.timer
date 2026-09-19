@@ -1,0 +1,13 @@
+[Unit]
+# awrise-generated 0.2.0 - rewritten by `awrise install`; do not edit.
+Description=awrise clock - wake run-due every 60s
+
+[Timer]
+OnBootSec=90
+OnUnitActiveSec=60
+AccuracySec=10
+Persistent=true
+Unit=awrise.service
+
+[Install]
+WantedBy=timers.target

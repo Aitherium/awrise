@@ -1,0 +1,8 @@
+[Unit]
+# awrise-generated 0.2.0 - rewritten by `awrise install`; do not edit.
+Description=awrise - one run-due pass
+
+[Service]
+Type=oneshot
+Environment=AWRISE_HOME=/home/ada/.aither/awrise
+ExecStart=/usr/bin/python3 -m awrise run-due --quiet --invoker systemd
