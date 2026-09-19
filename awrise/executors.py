@@ -62,7 +62,9 @@ KINDS = ("shell", "python", "http", "awrun", "agent", "session")
 #: environment, so a queued item is an instruction to spend someone else's
 #: authority. A scheduler that can post them is a privilege escalation with a
 #: cron entry in front of it; naming them here is the whole gate.
-AWRUN_REFUSED_KINDS = ("ci", "comet-deploy")
+#: `tunnel` joined 2026-09-19 in the SAME commit that added the kind to awrun's
+#: store: a wake must not be able to schedule opening a public hostname.
+AWRUN_REFUSED_KINDS = ("ci", "comet-deploy", "tunnel")
 
 #: Permission modes a ``session`` job may ask the harness daemon for. Anything
 #: else -- notably a mode that skips the permission prompt entirely -- is
