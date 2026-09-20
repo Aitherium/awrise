@@ -43,12 +43,16 @@ from . import clock, ledger, lock, store
 #: The same factor the platform's routine gates use: under two full windows
 #: an absence is indistinguishable from "it has not come round yet".
 WINDOW_FACTOR = 2
+#: The host clock fires run-due on this cadence (hostclock installs every 60s).
+#: A job that can hold a pass longer than this starves every other job, because
+#: the scheduler will not start a second overlapping instance of the pass.
+TICK_S = 60.0
 #: How many windows a job may be overdue before WL003 calls the clock dead.
 OVERDUE_FACTOR = 2
 #: Default window of ledger to read.
 DEFAULT_SINCE = "7d"
 
-RULES = ("WL001", "WL002", "WL003", "WL004")
+RULES = ("WL001", "WL002", "WL003", "WL004", "WL005")
 
 OK, VIOLATION, UNJUDGED = 0, 1, 2
 
@@ -274,6 +278,62 @@ def wl004_no_lock_outlives_its_wake(base: Path, jobs: Dict[str, dict], **_kw) ->
     return Finding("WL004", VIOLATION, f"{len(stale)} stale lock(s)", stale)
 
 
+def wl005_no_job_can_hold_the_pass(rows: Sequence[dict], jobs: Dict[str, dict], **_kw) -> Finding:
+    """An attached job that MEASURABLY outlives the tick starves every other job.
+
+    Measured 2026-09-19 on this host: fleet-gates ran attached and hit a 3300s
+    timeout. Windows Task Scheduler refuses a second instance of a running task,
+    so the whole clock stopped -- `status` read "last tick 10593s ago" while job1
+    and job2 sat overdue at "now". Nothing was broken; the no-double-fire
+    guarantee had become starvation. `detach: true` closes the pass at spawn.
+
+    Judged on OBSERVED duration, never on timeout_s: a ceiling is not evidence,
+    and flagging every job that merely carries the default would make this rule
+    permanently red and therefore unreadable.
+    """
+    worst: Dict[str, float] = {}
+    timed_out: set = set()
+    for row in rows:
+        name = row.get("job")
+        if not isinstance(name, str):
+            continue
+        if row.get("state") == "timeout":
+            timed_out.add(name)
+        seen = row.get("duration_s")
+        if isinstance(seen, (int, float)):
+            worst[name] = max(worst.get(name, 0.0), float(seen))
+    guilty: List[str] = []
+    silent: List[str] = []
+    for name, job in sorted(jobs.items()):
+        if not job.get("enabled", True) or job.get("detach"):
+            continue
+        if name in timed_out:
+            ceiling = float(_int(job.get("timeout_s")) or 0)
+            guilty.append(
+                f"{name}: attached and timed out at {ceiling:.0f}s"
+                f" -- it held the pass for {ceiling / TICK_S:.0f} ticks;"
+                " set detach: true"
+            )
+            continue
+        if name not in worst:
+            silent.append(f"{name}: no finished row yet")
+            continue
+        if worst[name] > TICK_S:
+            guilty.append(
+                f"{name}: attached, longest observed run {worst[name]:.0f}s"
+                f" > tick {TICK_S:.0f}s -- every other job waits behind it;"
+                " set detach: true"
+            )
+    if guilty:
+        return Finding("WL005", VIOLATION, f"{len(guilty)} job(s) can starve the clock", guilty)
+    if silent and not worst:
+        return Finding("WL005", UNJUDGED, "no finished row for any attached job", silent)
+    judged = [
+        n for n, j in jobs.items() if j.get("enabled", True) and not j.get("detach") and n in worst
+    ]
+    return Finding("WL005", OK, f"{len(judged)} attached job(s) finish inside a tick")
+
+
 # --------------------------------------------------------------------- main
 
 
@@ -287,6 +347,7 @@ def run(base: Optional[Path] = None, since: Optional[timedelta] = None) -> List[
         wl002_the_ledger_vocabulary_is_closed(rows=rows, jobs=jobs, base=base),
         wl003_every_enabled_job_is_being_woken(rows=rows, jobs=jobs, base=base),
         wl004_no_lock_outlives_its_wake(rows=rows, jobs=jobs, base=base),
+        wl005_no_job_can_hold_the_pass(rows=rows, jobs=jobs, base=base),
     ]
     if not jobs and not rows:
         findings.insert(
@@ -307,7 +368,7 @@ def verdict(findings: Sequence[Finding]) -> int:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="awrise checks",
-        description="WL001-WL004 against the wake ledger: 0 clean, 1 violation, 2 unjudged",
+        description="WL001-WL005 against the wake ledger: 0 clean, 1 violation, 2 unjudged",
     )
     parser.add_argument(
         "--since", default=DEFAULT_SINCE, help=f"ledger window to read (default {DEFAULT_SINCE})"
@@ -551,6 +612,24 @@ def self_test() -> int:
         )
     cases.append(("WL004 fires on a stale lock", _code(stale_lock, "WL004"), VIOLATION))
     cases.append(("WL004 quiet with no locks", _code(fresh, "WL004"), OK))
+
+    # WL005: an attached job measured holding the pass longer than a tick.
+    slow = _home_with(
+        [
+            _row("tick", now, reason="pass_start"),
+            _row("finished", now, job="j", state="success", duration_s=TICK_S * 15),
+        ],
+        {"j": _job("1m")},
+    )
+    cases.append(("WL005 fires on a slow attached job", _code(slow, "WL005"), VIOLATION))
+    detached = _home_with(
+        [
+            _row("tick", now, reason="pass_start"),
+            _row("finished", now, job="j", state="success", duration_s=TICK_S * 15),
+        ],
+        {"j": _job("1m", detach=True)},
+    )
+    cases.append(("WL005 quiet once it detaches", _code(detached, "WL005"), OK))
 
     # The verdict itself: a violation outranks an unjudged rule, and an empty
     # home is never a pass.

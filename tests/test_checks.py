@@ -1,4 +1,4 @@
-"""WL001-WL004: each rule fired by a record that breaks it, quiet on one that does not.
+"""WL001-WL005: each rule fired by a record that breaks it, quiet on one that does not.
 
 The rules read the ledger, the store and the lock directory and never run
 anything, so every case here builds the evidence by hand -- which is also the
@@ -413,3 +413,41 @@ def test_the_checks_self_test_flag_is_not_swallowed_by_the_global_one(home, caps
     listed = capsys.readouterr().out
     assert "interval_parse_accepts_s_m_h_d_w_and_compounds" in listed
     assert "WL001 fires" not in listed
+
+
+# ------------------------------------------------------------------- WL005
+
+
+def test_wl005_fires_on_an_attached_job_that_outran_a_tick(home):
+    """The starvation measured 2026-09-19: one long attached run holds the pass."""
+    now = clock.now_utc()
+    _job(home, last_started=now)
+    _row(home, "finished", now, job="j", state="success", duration_s=900.0)
+    finding = _find(home, "WL005")
+    assert finding.code == checks.VIOLATION
+    assert "detach" in " ".join(finding.details)
+
+
+def test_wl005_fires_on_an_attached_job_that_timed_out(home):
+    now = clock.now_utc()
+    _job(home, last_started=now, timeout_s=3300)
+    _row(home, "finished", now, job="j", state="timeout", reason="killed after 3300s")
+    finding = _find(home, "WL005")
+    assert finding.code == checks.VIOLATION
+    assert "timed out" in " ".join(finding.details)
+
+
+def test_wl005_is_quiet_on_a_detached_job(home):
+    """detach: true closes the pass at spawn -- the whole point of the rule."""
+    now = clock.now_utc()
+    _job(home, last_started=now, detach=True, timeout_s=3300)
+    _row(home, "finished", now, job="j", state="timeout", reason="killed after 3300s")
+    assert _find(home, "WL005").code == checks.OK
+
+
+def test_wl005_does_not_judge_a_ceiling(home):
+    """A big timeout_s is not evidence: only an observed run is."""
+    now = clock.now_utc()
+    _job(home, last_started=now, timeout_s=3300)
+    _row(home, "finished", now, job="j", state="success", duration_s=0.08)
+    assert _find(home, "WL005").code == checks.OK
