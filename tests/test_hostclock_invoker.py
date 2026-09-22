@@ -77,6 +77,12 @@ def test_a_hand_run_pass_is_still_not_a_scheduled_tick():
 def test_a_ticking_systemd_host_is_judged_ok(home, monkeypatch, kind):
     """The whole path: a record, its payloads, a live probe and ticks stamped
     exactly as the rendered unit stamps them."""
+    # `systemd-system` targets an ABSOLUTE path, so without this the test writes a
+    # REAL unit file: on Windows it left C:\etc\systemd\system\awrise.service
+    # behind (found 2026-09-20), and on a root Linux box it installs onto the host.
+    units = home.parent / "etc-systemd-system"
+    units.mkdir(parents=True, exist_ok=True)
+    monkeypatch.setenv(hostclock.SYSTEMD_SYSTEM_DIR_ENV, str(units))
     ctx = hostclock.context(kind, home)
     artifacts = hostclock.render(kind, ctx)
     hostclock._write_payloads(kind, ctx, artifacts)

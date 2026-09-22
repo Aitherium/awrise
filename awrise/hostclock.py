@@ -831,6 +831,25 @@ def digest(artifacts: Dict[str, str]) -> Dict[str, str]:
 # ------------------------------------------------------------- where it lands
 
 
+#: Where `--systemd-system` installs. A CONSTANT with an env override, not a
+#: literal at the call site, because the literal is an absolute POSIX path: a
+#: test that renders this kind writes a REAL unit file. Measured 2026-09-20 --
+#: `test_a_ticking_systemd_host_is_judged_ok[systemd-system]` had written
+#: `C:\etc\systemd\system\awrise.{service,timer}` on the dev box (their
+#: `Environment=AWRISE_HOME=` still named the pytest tmpdir), and on a Linux host
+#: running the suite as root the same call installs a live unit. The stray
+#: directory also made every "read the host, local path first" helper in
+#: check_quadlet_compose_parity scan TWO files instead of the distro's 451 units.
+#: Production callers never set the variable and land at the real path.
+SYSTEMD_SYSTEM_DIR_ENV = "AWRISE_SYSTEMD_SYSTEM_DIR"
+DEFAULT_SYSTEMD_SYSTEM_DIR = "/etc/systemd/system"
+
+
+def systemd_system_dir() -> str:
+    """The directory `--systemd-system` installs into, override honoured."""
+    return os.environ.get(SYSTEMD_SYSTEM_DIR_ENV) or DEFAULT_SYSTEMD_SYSTEM_DIR
+
+
 def artifact_targets(kind: str, ctx: Context) -> Dict[str, str]:
     """Artifact name -> absolute path we write it to (payload files only)."""
     names = _PAYLOAD_ARTIFACTS[kind]
@@ -838,7 +857,7 @@ def artifact_targets(kind: str, ctx: Context) -> Dict[str, str]:
         directory = (
             os.path.expanduser("~/.config/systemd/user")
             if kind == "systemd-user"
-            else "/etc/systemd/system"
+            else systemd_system_dir()
         )
         return {name: os.path.join(directory, name) for name in names}
     if kind == "launchd":

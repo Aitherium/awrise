@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "awrise"
-version = "0.2.1"
+version = "0.4.0"
 description = "Wake something on a schedule, let it do one thing, and put it back to sleep"
 readme = "README.md"
 requires-python = ">=3.10"
@@ -12,6 +12,12 @@ license = {text = "MIT"}
 authors = [
     {name = "AitherOS Contributors", email = "dp27148@gmail.com"}
 ]
+
+[project.optional-dependencies]
+# Only `import-routine` needs this -- everything else in awrise is stdlib-only
+# by design. Guarded `import yaml` inside that one function is what makes the
+# core package installable with zero third-party dependencies regardless.
+routines = ["pyyaml"]
 
 [project.scripts]
 awrise = "awrise.cli:main"

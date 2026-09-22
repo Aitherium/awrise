@@ -52,7 +52,7 @@ OVERDUE_FACTOR = 2
 #: Default window of ledger to read.
 DEFAULT_SINCE = "7d"
 
-RULES = ("WL001", "WL002", "WL003", "WL004", "WL005")
+RULES = ("WL001", "WL002", "WL003", "WL004", "WL005", "WL006")
 
 OK, VIOLATION, UNJUDGED = 0, 1, 2
 
@@ -334,6 +334,97 @@ def wl005_no_job_can_hold_the_pass(rows: Sequence[dict], jobs: Dict[str, dict], 
     return Finding("WL005", OK, f"{len(judged)} attached job(s) finish inside a tick")
 
 
+def _receipt_verdict(job: dict) -> Optional[tuple]:
+    """Read a detached job's OWN receipt. ``None`` means it cannot be judged.
+
+    The receipt has to be NEWER than the wake that is being judged, or it is
+    the previous run's verdict wearing this run's name -- the single most
+    likely way this check could lie. `exit_code` is the only key read; a
+    receipt that omits it has not stated an outcome.
+    """
+    path = job.get("receipt")
+    if not path:
+        return None
+    p = Path(os.path.expanduser(str(path)))
+    try:
+        mtime = p.stat().st_mtime
+        data = json.loads(p.read_text(encoding="utf-8", errors="replace"))
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or "exit_code" not in data:
+        return None
+    started = clock.parse_ts(job.get("last_started_at"))
+    if started is not None and mtime < started.timestamp():
+        return None
+    code = data.get("exit_code")
+    if not isinstance(code, int):
+        return None
+    return code, str(p)
+
+
+def wl006_a_detached_wake_is_not_a_verdict(
+    rows: Sequence[dict], jobs: Dict[str, dict], **_kw
+) -> Finding:
+    """`detached` says the child was SPAWNED, never that it succeeded.
+
+    WL005 pushed long jobs to `detach: true`, which closes the pass at spawn --
+    correct, and it costs the outcome: the row carries `state: detached` and
+    `exit_code: null` forever. Measured 2026-09-20 on this host: `awrise status`
+    printed "OK: every job's last wake ended success or a policy skip" while
+    awmine had exited 1 on all three of its runs (its own receipt said
+    residual_hits=41) and fleet-gates sat at consecutive_failures=3. Every
+    other rule passed. A detached wake is an UNJUDGED wake, and this file's
+    contract is that silence is never a pass.
+
+    UNJUDGED, not VIOLATION: the child may well have succeeded. What is wrong
+    is claiming to know. Read the job's OWN receipt to close it.
+    """
+    blind: List[str] = []
+    judged: List[str] = []
+    failed: List[str] = []
+    for name, job in sorted(jobs.items()):
+        if not job.get("enabled", True) or not job.get("detach"):
+            continue
+        if job.get("last_state") != "detached":
+            continue
+        fails = _int(job.get("consecutive_failures"))
+        verdict = _receipt_verdict(job)
+        if verdict is not None:
+            code, where = verdict
+            if code == 0:
+                judged.append(f"{name}: receipt says exit_code=0 ({where})")
+            else:
+                failed.append(f"{name}: receipt says exit_code={code} ({where})")
+            continue
+        blind.append(
+            f"{name}: last wake is detached (exit_code unknown)"
+            + (f", consecutive_failures={fails}" if fails else "")
+            + (
+                f", receipt {job['receipt']!r} is missing, stale or has no exit_code"
+                if job.get("receipt")
+                else " -- no receipt declared; set one with `awrise set <job> receipt=<path>`"
+            )
+        )
+    # A FAILING receipt is a verdict, and it outranks the abstention: the whole
+    # point of declaring one is that the job gets to say it failed.
+    if failed:
+        return Finding(
+            "WL006", VIOLATION, f"{len(failed)} detached wake(s) reported failure",
+            failed + blind,
+        )
+    if not blind:
+        note = (
+            f"{len(judged)} detached wake(s) judged by their own receipt"
+            if judged
+            else "no enabled detached job is awaiting a verdict"
+        )
+        return Finding("WL006", OK, note, judged)
+    return Finding(
+        "WL006", UNJUDGED, f"{len(blind)} detached wake(s) with no observed outcome",
+        blind + judged,
+    )
+
+
 # --------------------------------------------------------------------- main
 
 
@@ -348,6 +439,7 @@ def run(base: Optional[Path] = None, since: Optional[timedelta] = None) -> List[
         wl003_every_enabled_job_is_being_woken(rows=rows, jobs=jobs, base=base),
         wl004_no_lock_outlives_its_wake(rows=rows, jobs=jobs, base=base),
         wl005_no_job_can_hold_the_pass(rows=rows, jobs=jobs, base=base),
+        wl006_a_detached_wake_is_not_a_verdict(rows=rows, jobs=jobs, base=base),
     ]
     if not jobs and not rows:
         findings.insert(
@@ -368,7 +460,7 @@ def verdict(findings: Sequence[Finding]) -> int:
 def main(argv: Optional[Sequence[str]] = None) -> int:
     parser = argparse.ArgumentParser(
         prog="awrise checks",
-        description="WL001-WL005 against the wake ledger: 0 clean, 1 violation, 2 unjudged",
+        description="WL001-WL006 against the wake ledger: 0 clean, 1 violation, 2 unjudged",
     )
     parser.add_argument(
         "--since", default=DEFAULT_SINCE, help=f"ledger window to read (default {DEFAULT_SINCE})"
@@ -630,6 +722,18 @@ def self_test() -> int:
         {"j": _job("1m", detach=True)},
     )
     cases.append(("WL005 quiet once it detaches", _code(detached, "WL005"), OK))
+
+    # WL006: a detached wake spawned a child and never learned its fate.
+    blind = _home_with(
+        [_row("tick", now, reason="pass_start")],
+        {"j": _job("1m", detach=True, last_state="detached")},
+    )
+    cases.append(("WL006 unjudged on a detached wake", _code(blind, "WL006"), UNJUDGED))
+    seen = _home_with(
+        [_row("tick", now, reason="pass_start")],
+        {"j": _job("1m", detach=True, last_state="success")},
+    )
+    cases.append(("WL006 quiet once an outcome is known", _code(seen, "WL006"), OK))
 
     # The verdict itself: a violation outranks an unjudged rule, and an empty
     # home is never a pass.

@@ -37,8 +37,8 @@ def test_add_job(tmp_path, monkeypatch):
     assert result == 0
     jobs = load_jobs()
     assert "test" in jobs
-    assert jobs["test"]["command"] == "echo test"
-    assert jobs["test"]["interval"] == "900.0"
+    assert jobs["test"]["run"] == "echo test"
+    assert jobs["test"]["interval_s"] == 900.0
 
 def test_add_duplicate_job(tmp_path, monkeypatch):
     monkeypatch.setenv("AWRISE_HOME", str(tmp_path))
@@ -72,13 +72,10 @@ def test_idempotency(tmp_path, monkeypatch):
     cmd_add(add_args)
     run_args = argparse.Namespace(quiet=True)
     cmd_run_due(run_args)
-    with open(tmp_path / "jobs.json") as f:
-        jobs1 = json.load(f)
-    last_run1 = jobs1["t"]["last_run"]
+    last_run1 = load_jobs()["t"]["last_finished_at"]
+    assert last_run1, "the first run-due must actually have run the job"
     cmd_run_due(run_args)
-    with open(tmp_path / "jobs.json") as f:
-        jobs2 = json.load(f)
-    last_run2 = jobs2["t"]["last_run"]
+    last_run2 = load_jobs()["t"]["last_finished_at"]
     assert last_run1 == last_run2, "Running twice should not execute the same job twice"
 
 def test_empty_command_skip(tmp_path, monkeypatch):

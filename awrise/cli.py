@@ -11,21 +11,33 @@ from __future__ import annotations
 import argparse
 import contextlib
 import fnmatch
+import glob
 import json
 import os
+import queue
+import socket
 import subprocess
 import sys
+import threading
+import time
 from datetime import timedelta
 from pathlib import Path
-from typing import Callable, List, Optional, Tuple
+from typing import Callable, Dict, List, Optional, Tuple
 
+from . import _command_guard as command_guard
 from . import clock, executors, hostclock, ledger, lock, store
 from .clock import parse_interval  # noqa: F401  (0.1.0 import path, kept)
 from .executors import Outcome
 
 #: Spec keys this module reads. The self-test asserts SPEC_DEFAULTS ==
 #: executors.READS | cli.READS, so an unread knob cannot ship.
-READS = ("enabled", "run", "every", "interval_s", "at", "missed", "report")
+# `receipt` is declared HERE because the CLI is what accepts and stores it;
+# the module that READS its contents is `checks` (WL006), which the spec-key
+# self-test also scans.
+READS = (
+    "enabled", "run", "every", "interval_s", "at", "missed", "report", "predict",
+    "receipt",
+)
 
 Executor = Callable[[dict, dict], Outcome]
 
@@ -110,6 +122,12 @@ def _validate_spec(
             f"Error: missed must be one of "
             f"{', '.join(store.MISSED_POLICIES)}, not {job.get('missed')!r}",
         )
+    if job.get("predict") not in store.PREDICT_POLICIES:
+        raise FatalError(
+            1,
+            f"Error: predict must be one of "
+            f"{', '.join(store.PREDICT_POLICIES)}, not {job.get('predict')!r}",
+        )
     kind = job.get("executor") or "shell"
     if kind not in executors.KINDS:
         raise FatalError(
@@ -171,15 +189,19 @@ def _parse_bool(key: str, raw: str) -> bool:
 def _coerce(key: str, raw: str):
     if key not in store.SETTABLE:
         raise FatalError(1, f"Error: unknown key {key!r}; settable: {', '.join(store.SETTABLE)}")
-    if key in ("enabled", "detach", "park_after", "wake_required"):
+    if key in ("enabled", "detach", "park_after", "wake_required", "report.memory"):
         return _parse_bool(key, raw)
     if key == "timeout_s":
         return raw.strip()
-    if key in ("cwd", "at", "bearer_file", "permission_mode", "wake", "report.relay"):
+    if key in (
+        "cwd", "at", "bearer_file", "permission_mode", "wake", "report.relay", "receipt",
+    ):
         return None if raw.strip().lower() in ("", "null", "none") else raw.strip()
     if key == "missed":
         # `catch-up-once` is what an operator types; one spelling is stored.
         return raw.strip().lower().replace("-", "_")
+    if key == "predict":
+        return raw.strip().lower()
     if key == "executor":
         return raw.strip().lower()
     if key == "report.on":
@@ -239,6 +261,7 @@ def cmd_add(args) -> int:
     timeout = getattr(args, "timeout", None)
     job["timeout_s"] = store.SPEC_DEFAULTS["timeout_s"] if timeout is None else timeout
     job["cwd"] = getattr(args, "cwd", None) or None
+    job["receipt"] = getattr(args, "receipt", None) or None
     job["at"] = getattr(args, "at", None) or None
     job["enabled"] = not getattr(args, "disabled", False)
     job["detach"] = bool(getattr(args, "detach", False))
@@ -709,6 +732,612 @@ def _report_block(job: dict) -> dict:
     return merged
 
 
+# ------------------------------------------------------------------- memory
+#
+# ``report.memory: true`` wires a job to an optional, ancestor-safe agent
+# memory (``awm``) as a SIDE CHANNEL -- never load-bearing. A missing or
+# broken ``awm`` install, or a store that cannot answer, must never block or
+# fail a wake: every failure here becomes a `report_error` ledger row instead
+# of a raised exception, matching the platform's "client not lift" rule.
+
+#: The store gets this long to answer before the sink gives up -- never the
+#: wake's own budget. Bounds a single call; see ``MEMORY_DRAIN_TIMEOUT_S``
+#: and the per-PASS recall budget in ``_run_due_pass`` for what actually
+#: keeps this off the tick path when several jobs ask in one pass.
+MEMORY_TIMEOUT_S = 5.0
+#: What a whole PASS gives its own background memory writes (mainly
+#: ``remember``, queued behind whatever ``recall`` calls came before it on
+#: the one shared worker) to land before the pass reports itself done.
+#: Generous relative to one call because a pass may have queued several,
+#: but still finite -- draining never waits forever.
+MEMORY_DRAIN_TIMEOUT_S = MEMORY_TIMEOUT_S * 2
+#: How many past wakes ``report.memory`` recalls into the executor's env.
+MEMORY_RECALL_LIMIT = 20
+#: The variable a job configured with ``report.memory: true`` finds in its
+#: own environment: a JSON array of this job's own recalled wake facts.
+MEMORY_ENV = "AWRISE_MEMORY_JSON"
+#: One MemoryStore per AWRISE_HOME, built once per process. ``MemoryStore()``
+#: does synchronous SQLite setup on every construction (open, schema check),
+#: so re-building it on every wake would put that cost on the tick path;
+#: caching it here is what keeps the sink's own overhead to one open per run,
+#: not one open per job per pass.
+_MEMORY_ENGINES: Dict[str, object] = {}
+#: sqlite3 connections are thread-affine (``check_same_thread`` defaults
+#: True in awm's own store.py, and awm is consumed here, never patched), so a
+#: cached ``MemoryStore`` must always be touched from the SAME thread it was
+#: opened on. Every awm call therefore runs on this ONE persistent daemon
+#: worker rather than a fresh thread per call -- that is what lets the
+#: "construct once" cache above actually hold across wakes.
+_MEMORY_WORK_Q: "queue.SimpleQueue" = queue.SimpleQueue()
+_MEMORY_WORKER_LOCK = threading.Lock()
+_memory_worker_started = False
+#: Outstanding background memory work (every call, blocking or not, is
+#: submitted through here). A blocking caller already knows when its OWN
+#: call finishes via its result queue; this counter is for the caller that
+#: does NOT wait -- ``remember`` -- so a PASS can drain before it reports
+#: itself done without any individual job ever joining the worker itself.
+_MEMORY_PENDING_LOCK = threading.Lock()
+_MEMORY_PENDING_COUNT = 0
+_MEMORY_PENDING_DONE = threading.Event()
+_MEMORY_PENDING_DONE.set()
+
+
+def _memory_pending_inc() -> None:
+    global _MEMORY_PENDING_COUNT
+    with _MEMORY_PENDING_LOCK:
+        _MEMORY_PENDING_COUNT += 1
+        _MEMORY_PENDING_DONE.clear()
+
+
+def _memory_pending_dec() -> None:
+    global _MEMORY_PENDING_COUNT
+    with _MEMORY_PENDING_LOCK:
+        _MEMORY_PENDING_COUNT = max(0, _MEMORY_PENDING_COUNT - 1)
+        if _MEMORY_PENDING_COUNT == 0:
+            _MEMORY_PENDING_DONE.set()
+
+
+def _memory_worker_loop() -> None:
+    while True:
+        fn, result_q = _MEMORY_WORK_Q.get()
+        try:
+            result_q.put((True, fn()))
+        except BaseException as exc:  # noqa: BLE001 - handed back to the caller's own thread
+            result_q.put((False, exc))
+        finally:
+            _memory_pending_dec()
+
+
+def _memory_submit(fn: Callable[[], object]) -> "queue.SimpleQueue":
+    """Hand ``fn`` to the one persistent memory worker and return its result
+    queue WITHOUT waiting on it -- the shared building block under both
+    ``_call_with_timeout`` (recall, which still needs an answer before the
+    job it feeds may fire) and the fire-and-forget remember path (which
+    needs no answer at all, only that it eventually resolve so a later
+    recall -- or this pass's own drain -- can see it)."""
+    global _memory_worker_started
+    if not _memory_worker_started:
+        with _MEMORY_WORKER_LOCK:
+            if not _memory_worker_started:
+                threading.Thread(target=_memory_worker_loop, daemon=True).start()
+                _memory_worker_started = True
+    result_q: "queue.SimpleQueue" = queue.SimpleQueue()
+    _memory_pending_inc()
+    _MEMORY_WORK_Q.put((fn, result_q))
+    return result_q
+
+
+def _memory_drain(timeout_s: float) -> bool:
+    """Best-effort: wait for every memory call submitted so far to finish,
+    so a fact THIS pass wrote is recallable by the time the pass itself
+    returns. Bounded and never raises -- a store still wedged past
+    ``timeout_s`` is exactly the case this must not block on forever; the
+    pass reports itself done either way, and a caller that cares can read
+    the return value. Never called from inside the per-job dispatch loop:
+    only once, after every due job has already had its own turn, so this
+    can add to the PASS's total time without ever adding to any JOB's wait
+    for the one before it."""
+    return _MEMORY_PENDING_DONE.wait(timeout_s)
+
+
+def _call_with_timeout(fn: Callable[[], object], timeout_s: float) -> object:
+    """Run ``fn()`` on the one persistent memory worker and return its
+    result, or raise ``TimeoutError`` or whatever ``fn`` raised.
+
+    ``MemoryStore``'s calls have no timeout of their own (a locked or huge
+    sqlite file can simply hang), so the bound here is a watchdog queue.get,
+    not a parameter passed down. The worker is a daemon thread and this call
+    never joins it: a `fn` that is still hung when the timeout fires must
+    not also hang whatever called `_call_with_timeout`, or the interpreter
+    at exit -- it degrades every later memory call in this process to the
+    same timeout instead, which is still never a blocked tick.
+    """
+    result_q = _memory_submit(fn)
+    try:
+        ok, value = result_q.get(timeout=timeout_s)
+    except queue.Empty:
+        raise TimeoutError(f"timed out after {timeout_s:g}s") from None
+    if not ok:
+        raise value
+    return value
+
+
+def _memory_scope(name: str):
+    """This job's exact, three-segment memory scope. One host, one job."""
+    import awm  # noqa: PLC0415 - optional by contract, guarded here only
+
+    return awm.Scope("awrise", socket.gethostname(), name)
+
+
+def _memory_store(base: Path):
+    """The cached ``MemoryStore`` for this ``AWRISE_HOME``."""
+    import awm  # noqa: PLC0415 - optional by contract, guarded here only
+
+    key = str(base)
+    engine = _MEMORY_ENGINES.get(key)
+    if engine is None:
+        engine = awm.MemoryStore(base / "awm" / "memory.db")
+        _MEMORY_ENGINES[key] = engine
+    return engine
+
+
+def _memory_recall_json(
+    base: Path, name: str, timeout_s: float = MEMORY_TIMEOUT_S
+) -> Tuple[Optional[str], Optional[str]]:
+    """(``AWRISE_MEMORY_JSON`` value, problem).
+
+    ``recall`` also returns ANCESTOR-scope facts by design (that is awm's
+    decay, not a bug) -- but exporting one into this job's env would let
+    anyone able to ``remember()`` into ``awrise:<host>:*`` or ``awrise:*:*``
+    on the same local sqlite file poison every job on the host with one
+    write. Only a fact whose OWN scope is this job's exact scope is ever
+    exported; the filter compares ``Memory.scope`` (the row's real scope,
+    never the query scope) against the job's scope string.
+
+    ``timeout_s`` defaults to the full per-call budget for a standalone
+    caller (``explain``); a pass dispatching several memory-enabled jobs
+    passes the REMAINDER of its own shared, per-pass budget instead, so
+    a degraded store can cost that pass at most one ``MEMORY_TIMEOUT_S``
+    in total, not one per job (see ``_run_due_pass``).
+    """
+
+    def _work() -> str:
+        # `_memory_scope`/`_memory_store` do their own guarded `import awm`;
+        # an absent awm surfaces from there, same as any other failure here.
+        scope = _memory_scope(name)
+        engine = _memory_store(base)
+        facts = engine.recall(scope, kind="wake", limit=MEMORY_RECALL_LIMIT)
+        exact = str(scope)
+        own = [f for f in facts if f.scope == exact]
+        return json.dumps([json.loads(f.value) for f in own])
+
+    try:
+        return _call_with_timeout(_work, timeout_s), None
+    except Exception as exc:  # noqa: BLE001 - a memory failure is never a wake failure
+        return None, f"memory_recall_failed:{type(exc).__name__}:{exc}"
+
+
+# ------------------------------------------------------------------- door
+#
+# The awdecide door (`AWRISE_DECIDE_URL`, the world-model `/decide` surface)
+# is an OPTIONAL rung in front of the local awpredict engine, and the teach
+# side of the same loop: a finished wake tells the door what actually
+# happened, so the next ask is answered from evidence instead of a coin
+# flip. Measured 2026-09-19 against the live door: an untaught fork answers
+# `{"answer": "yes", "confidence": 0.0, "source": "none", "learned_from": 0}`
+# -- a caller reading `answer` alone acts on nothing at all -- and after two
+# taught outcomes the same question answers `source="engine"`, `p_yes=1.0`,
+# with latency falling 12,150ms to 4.4ms. So confidence 0.0 or source "none"
+# is UNJUDGED here BY NAME, never a verdict.
+#
+# stdlib only: awrise ships standalone (scripts/check_moat_boundary.py), so
+# this speaks HTTP with urllib rather than importing awdecide or httpx.
+
+#: Where the door lives. Unset (the default) means the whole rung is off and
+#: the gate behaves exactly as it did before this existed.
+DECIDE_URL_ENV = "AWRISE_DECIDE_URL"
+#: The fork every awrise question is asked under, so a door shared with other
+#: callers keeps this loop's evidence separate from theirs.
+DECIDE_FORK = "awrise.predict_gate"
+#: The door's own wall-clock budget -- never the wake's. A cold door took
+#: 12s on its first call, which is why this is a side channel with a bound
+#: and not something a tick may wait on.
+DECIDE_TIMEOUT_S = 3.0
+
+
+def _decide_url() -> str:
+    """The door's base URL, or "" when this rung is off."""
+    return (os.environ.get(DECIDE_URL_ENV) or "").rstrip("/")
+
+
+def _decide_post(path: str, payload: dict, timeout: float) -> Optional[dict]:
+    """POST to the door and return its JSON, or None for ANY failure.
+
+    Never raises: an unreachable, slow, unauthorised or malformed door is a
+    silent no-answer here, which the callers turn into UNJUDGED or a
+    report_error row -- never into a failed wake.
+    """
+    base = _decide_url()
+    if not base:
+        return None
+    import urllib.error  # noqa: PLC0415 - optional rung, guarded here only
+    import urllib.request  # noqa: PLC0415
+
+    body = json.dumps(payload).encode("utf-8")
+    req = urllib.request.Request(
+        f"{base}{path}",
+        data=body,
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    token = os.environ.get("AWRISE_DECIDE_TOKEN") or ""
+    if token:
+        req.add_header("Authorization", f"Bearer {token}")
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:  # noqa: S310
+            return json.loads(resp.read().decode("utf-8") or "{}")
+    except Exception:  # noqa: BLE001 - a door failure is never a wake failure
+        return None
+
+
+def _decide_state(name: str, job: dict) -> dict:
+    """The state a fork is keyed on: the job's shape and how it has been
+    going, never its command (a command is not evidence, and a door shared
+    across machines should not hold one)."""
+    return {
+        "job": name,
+        "interval_s": job.get("interval_s"),
+        "timeout_s": job.get("timeout_s"),
+        "recent_states": [job.get("last_state")] if job.get("last_state") else [],
+        "consecutive_failures": job.get("consecutive_failures", 0),
+        "detach": bool(job.get("detach")),
+    }
+
+
+def _decide_teach_async(base: Path, name: str, job: dict, outcome: Outcome) -> None:
+    """Tell the door how this wake actually ended. Fire and forget, on the
+    memory worker (so the door and the store share one background lane and
+    neither can delay a pass)."""
+    if not _decide_url():
+        return
+
+    def _work() -> None:
+        answer = "yes" if outcome.state in ledger.BAD_STATES else "no"
+        _decide_post(
+            "/decide/teach",
+            {
+                "fork": DECIDE_FORK,
+                "state": _decide_state(name, job),
+                "answer": answer,
+                "reward": 1.0,
+            },
+            DECIDE_TIMEOUT_S,
+        )
+
+    _memory_submit(_work)
+
+
+def _decide_verdict(name: str, job: dict) -> Optional[dict]:
+    """Ask the door whether this job's next wake goes badly.
+
+    Returns the same shape ``predict_verdict`` returns, or None when the rung
+    is off or the door had nothing worth acting on -- so the caller falls
+    through to the local engine exactly as before.
+    """
+    reply = _decide_post(
+        "/decide",
+        {
+            "fork": DECIDE_FORK,
+            "kind": "yesno",
+            "question": "Will this wake fail or time out if fired now?",
+            "state": _decide_state(name, job),
+        },
+        DECIDE_TIMEOUT_S,
+    )
+    if not isinstance(reply, dict) or reply.get("error"):
+        return None
+    confidence = reply.get("confidence") or 0.0
+    source = reply.get("source") or "none"
+    learned = reply.get("learned_from") or 0
+    if source == "none" or not confidence or not learned:
+        # The measured untaught shape: an answer with no evidence under it.
+        return None
+    p_yes = reply.get("p_yes")
+    if p_yes is None:
+        return None
+    bad = float(p_yes) >= 0.5
+    return {
+        "verdict": "bad" if bad else "good",
+        "reason": (f"door says p(fail)={float(p_yes):.2f} from {learned} outcome(s)"),
+        "confidence": float(confidence),
+        "mode": f"door:{source}",
+        "rows": int(learned),
+        "failure": False,
+    }
+
+
+def _memory_remember_async(
+    base: Path,
+    name: str,
+    wake_id: str,
+    pass_id: str,
+    invoker: str,
+    outcome: Outcome,
+    finished_at: str,
+    duration_s,
+) -> None:
+    """Submit this finished wake's fact to the background memory worker and
+    return immediately -- never joined here, so a degraded store can never
+    make ``remember`` delay this job's own record, let alone any OTHER due
+    job's turn in the pass. Nobody waits on the result, so the failure
+    report a synchronous caller would normally make is made HERE instead,
+    from the worker thread, once the call actually resolves (which may be
+    well after this function has returned).
+
+    Keyed ``wake-<wake_id>`` -- a fixed key per job would UPSERT over every
+    prior wake (``remember`` upserts on ``(scope, key)``); a distinct key per
+    wake is what lets ``recall`` return the last N wakes instead of only the
+    latest one.
+    """
+
+    def _work() -> None:
+        try:
+            # `_memory_scope`/`_memory_store` do their own guarded `import awm`.
+            scope = _memory_scope(name)
+            engine = _memory_store(base)
+            payload = json.dumps(
+                {
+                    "state": outcome.state,
+                    "reason": outcome.reason,
+                    "duration_s": duration_s,
+                    "exit_code": outcome.exit_code,
+                    "ts": finished_at,
+                }
+            )
+            engine.remember(scope, key=f"wake-{wake_id}", value=payload, kind="wake")
+        except Exception as exc:  # noqa: BLE001 - a memory failure is never a wake failure
+            _report_error_row(
+                base,
+                name,
+                wake_id,
+                pass_id,
+                invoker,
+                f"memory_remember_failed:{type(exc).__name__}:{exc}",
+            )
+
+    _memory_submit(_work)
+
+
+# ------------------------------------------------------------------ predict
+#
+# `predict: warn|skip` wires a job to an optional awpredict WorldModel as a
+# gate BEFORE it fires -- also a SIDE CHANNEL, never load-bearing. A missing
+# or broken `awpredict`, a cold engine, or a prediction that times out must
+# never block or fail a wake: it degrades to verdict=UNJUDGED, same
+# "client not lift" discipline as the memory sink above.
+
+#: Below this many of the job's own JUDGED finished-wake rows (a "success" or
+#: a `ledger.BAD_STATES` outcome -- a policy skip or cancellation says
+#: nothing about the command's own behaviour, so it is not counted) the
+#: population is too thin to mean anything, and the gate says UNJUDGED by
+#: name rather than dressing up a guess from one or two points as a verdict.
+PREDICT_MIN_ROWS = 5
+#: Most recent judged rows fed into the engine on each call. Bounded so a
+#: job with years of history costs this call a fixed amount of work, not a
+#: growing one -- the engine itself is cached (below), but re-observing every
+#: row on every due-check would not be.
+PREDICT_HISTORY_LIMIT = 50
+#: The predict() call's own wall-clock budget -- never the wake's own. This
+#: is what makes "the gate can never delay or block a tick" true whichever
+#: mode (tabular/hybrid/neural) the shared engine happens to be in.
+PREDICT_TIMEOUT_S = 3.0
+#: awpredict's action space is open; this gate only ever asks about ONE
+#: action (whether the job's next wake goes well), so it names it once.
+_PREDICT_ACTION = "wake"
+#: One MLPWorldModel per AWRISE_HOME, built once per process -- its
+#: `__init__` builds an encoder pair, so paying that cost once, not once per
+#: job per due-check, is what keeps a predict-eligible pass affordable at
+#: all (same discipline as `_memory_store` above; store.py's own doc comment
+#: on `MemoryStore` is the prior art this mirrors).
+_PREDICT_ENGINES: Dict[str, object] = {}
+
+
+def _predict_engine(base: Path):
+    """The cached WorldModel engine for this ``AWRISE_HOME``."""
+    import awpredict.core.mlp as mlp  # noqa: PLC0415 - optional by contract, guarded here only
+
+    key = str(base)
+    engine = _PREDICT_ENGINES.get(key)
+    if engine is None:
+        engine = mlp.MLPWorldModel()
+        _PREDICT_ENGINES[key] = engine
+    return engine
+
+
+def _predict_bucket(state: Optional[str]) -> Optional[str]:
+    """``"good"`` / ``"bad"`` / ``None`` for a row that says nothing about the
+    command's own behaviour (a policy skip, a cancellation, ``would_fire``)."""
+    if state == "success":
+        return "good"
+    if state in ledger.BAD_STATES:
+        return "bad"
+    return None
+
+
+def _predict_judged_rows(base: Path, name: str) -> List[dict]:
+    """This job's own finished rows whose state says something about the
+    command's own behaviour, oldest first -- the population the row-count
+    threshold and the engine are both built from."""
+    rows = ledger.read(base, job=name, event="finished")
+    return [row for row in rows if _predict_bucket(row.get("state")) is not None]
+
+
+def _predict_last_finished_state(base: Path, name: str) -> Optional[str]:
+    """The state of this job's most recent ``finished`` ledger row, or None.
+
+    Read fresh from the ledger every call -- never from a stored copy -- so
+    the no-starvation rule (a job may never be ``skipped_predicted`` twice in
+    a row) is judged against what is actually on disk, including a row this
+    same pass just wrote for the SAME job on an earlier due-check.
+    """
+    rows = ledger.read(base, job=name, event="finished")
+    return rows[-1].get("state") if rows else None
+
+
+def _predict_state_hash(name: str) -> int:
+    """A deterministic (never Python's randomised ``hash()``) int key for
+    "this job", so the engine's tabular dict looks the same key up across
+    calls in this process."""
+    import hashlib  # noqa: PLC0415 - only this helper needs it
+
+    digest = hashlib.sha256(f"awrise-predict:{name}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def _predict_next_hash(bucket: str) -> int:
+    import hashlib  # noqa: PLC0415 - only this helper needs it
+
+    digest = hashlib.sha256(f"awrise-predict-next:{bucket}".encode("utf-8")).digest()
+    return int.from_bytes(digest[:8], "big")
+
+
+def _predict_call_with_timeout(fn: Callable[[], object], timeout_s: float) -> object:
+    """Run ``fn()`` on its OWN daemon thread; ``TimeoutError`` past *timeout_s*.
+
+    A dedicated thread per call, not a shared pool: ``predict()`` has no
+    timeout of its own, so a genuinely hung call must never strand a LATER
+    call behind it the way a single-worker pool would. The thread is a
+    daemon, so a call still running when the process exits never blocks that
+    exit either -- it is simply abandoned, which is the fail-open contract.
+    """
+    box: List[tuple] = []
+
+    def _run() -> None:
+        try:
+            box.append(("ok", fn()))
+        except BaseException as exc:  # noqa: BLE001 - handed back to the caller's own thread
+            box.append(("error", exc))
+
+    thread = threading.Thread(target=_run, daemon=True)
+    thread.start()
+    thread.join(timeout_s)
+    if thread.is_alive():
+        raise TimeoutError(f"timed out after {timeout_s:g}s")
+    status, payload = box[0]
+    if status == "error":
+        raise payload
+    return payload
+
+
+def predict_verdict(base: Path, name: str) -> dict:
+    """The predict gate's own verdict for this job, read-only, never raising.
+
+    ``{"verdict": "UNJUDGED"|"good"|"bad", "reason": str, "confidence": float,
+    "mode": str|None, "rows": int, "failure": bool}``. ``failure`` is true
+    only for a genuine engine failure (a timeout or an exception) -- never
+    for "too few rows yet", which is an ordinary, expected UNJUDGED and not
+    something a caller should log as a `report_error`.
+
+    UNJUDGED is not synthesised from awpredict: no WorldModel engine ships an
+    UNJUDGED sentinel (``predict()`` returns bare ``None`` on an unseen
+    state/action). This function is what decides "too little history" and
+    "the engine had nothing to say" both read as UNJUDGED to a caller.
+    """
+    if _decide_url():
+        try:
+            jobs = store.load(base)
+        except Exception:  # noqa: BLE001 - the door is never worth a raise here
+            jobs = {}
+        door = _decide_verdict(name, jobs.get(name) or {})
+        if door is not None:
+            return door
+    rows = _predict_judged_rows(base, name)
+    if len(rows) < PREDICT_MIN_ROWS:
+        return {
+            "verdict": "UNJUDGED",
+            "reason": f"fewer than {PREDICT_MIN_ROWS} historical rows ({len(rows)})",
+            "confidence": 0.0,
+            "mode": None,
+            "rows": len(rows),
+            "failure": False,
+        }
+
+    def _work() -> Tuple[Optional[tuple], str]:
+        engine = _predict_engine(base)
+        state_hash = _predict_state_hash(name)
+        for row in rows[-PREDICT_HISTORY_LIMIT:]:
+            bucket = _predict_bucket(row.get("state"))
+            engine.observe(
+                state_hash,
+                _PREDICT_ACTION,
+                _predict_next_hash(bucket),
+                1.0 if bucket == "good" else -1.0,
+                False,
+            )
+        prediction = engine.predict(state_hash, _PREDICT_ACTION)
+        return prediction, engine.mode
+
+    try:
+        prediction, mode = _predict_call_with_timeout(_work, PREDICT_TIMEOUT_S)
+    except TimeoutError:
+        return {
+            "verdict": "UNJUDGED",
+            "reason": f"predict timed out after {PREDICT_TIMEOUT_S:g}s",
+            "confidence": 0.0,
+            "mode": None,
+            "rows": len(rows),
+            "failure": True,
+        }
+    except Exception as exc:  # noqa: BLE001 - a predict failure is never a wake failure
+        return {
+            "verdict": "UNJUDGED",
+            "reason": f"predict raised: {type(exc).__name__}: {exc}",
+            "confidence": 0.0,
+            "mode": None,
+            "rows": len(rows),
+            "failure": True,
+        }
+    if prediction is None:
+        return {
+            "verdict": "UNJUDGED",
+            "reason": "engine has no prediction for this job yet",
+            "confidence": 0.0,
+            "mode": mode,
+            "rows": len(rows),
+            "failure": False,
+        }
+    _next_hash, reward, _done = prediction
+    verdict = "good" if reward > 0 else "bad"
+    # The heuristic this gate owns (no engine exposes a confidence output):
+    # more judged history raises it, and a hit that only a hybrid/neural
+    # fallback produced -- not an exact tabular match -- is marked less sure.
+    confidence = min(1.0, len(rows) / float(PREDICT_MIN_ROWS))
+    if mode != "tabular":
+        confidence *= 0.5
+    return {
+        "verdict": verdict,
+        "reason": f"{len(rows)} judged historical row(s), mode={mode}",
+        "confidence": round(confidence, 3),
+        "mode": mode,
+        "rows": len(rows),
+        "failure": False,
+    }
+
+
+def _predict_should_skip(base: Path, name: str, prediction: dict) -> bool:
+    """Would ``skip`` policy refuse to fire on this verdict right now?
+
+    Shared by the real pass and ``_would_do`` so a dry run can never disagree
+    with what the next real pass would do: a bad verdict skips UNLESS the
+    job's own last row was already ``skipped_predicted`` -- forcing a real
+    attempt then, so a job can never be skipped twice running on a
+    prediction alone.
+    """
+    if prediction["verdict"] != "bad":
+        return False
+    return _predict_last_finished_state(base, name) != "skipped_predicted"
+
+
 def _sink_run(argv: List[str]) -> Tuple[Optional[int], str, str]:
     """(exit code, stdout, problem). The problem is non-empty when the tool
     could not be run at all, which is a different fact from a non-zero exit.
@@ -1020,6 +1649,27 @@ def _record(
     _stamp(job, wake_id, started_at, outcome, finished_at, executed=executed or measured)
     jobs = store.reload_merge(jobs, [name], base)
     store.save(jobs, base)
+    # A fact per finished wake, gated on the FRESH (post-reload_merge) report
+    # block, same as `_notify` below reads its own copy fresh: the row and
+    # the store are already on disk by the time this runs, so a broken or
+    # missing `awm` costs a `report_error` row and nothing else -- never a
+    # failed wake. Submitted and forgotten: nothing here may wait on the
+    # worker, or a degraded store would cost every OTHER due job in this
+    # pass a second timeout on top of `recall`'s (measured 2026-09-19: the
+    # earlier fix's guarantee, "a hang never blocks a tick", held for
+    # `recall` alone and broke the moment `remember` also joined the same
+    # worker inline).
+    memory_job = jobs.get(name)
+    if memory_job is not None and _report_block(memory_job).get("memory"):
+        _memory_remember_async(
+            base, name, wake_id, pass_id, invoker, outcome, finished_at, row["duration_s"]
+        )
+    # The other half of the same loop: the door learns what this wake did, so
+    # the next ask is answered from an outcome instead of nothing. Keyed on
+    # the job as it was BEFORE this wake (`memory_job`), which is the state
+    # the prediction would have been made against.
+    if memory_job is not None:
+        _decide_teach_async(base, name, memory_job, outcome)
     # Sinks last, and never in the way: the row and the store are already on
     # disk, so a relay server that is down or an awask that is not installed
     # costs a `report_error` row and nothing else.
@@ -1035,6 +1685,8 @@ def _execute(
     executor: Executor,
     reason: str,
     recheck: bool = False,
+    memory_deadline: Optional[float] = None,
+    prediction: Optional[dict] = None,
 ) -> Tuple[dict, Outcome]:
     """lock -> started row -> exec -> finished row -> jobs.json -> unlock.
 
@@ -1043,6 +1695,12 @@ def _execute(
     pass) and never waits. With ``recheck`` the job is re-read from disk
     under the lock, so a pass that loaded the store BEFORE another pass fired
     the job does not fire it again inside the same window.
+
+    ``memory_deadline`` is a ``time.monotonic()`` instant shared by every job
+    ``_run_due_pass`` dispatches in ONE pass: the recall budget below is the
+    time left until it, never a fresh ``MEMORY_TIMEOUT_S`` per job. A single
+    manual ``cmd_run`` passes ``None`` and gets the full budget -- there is no
+    OTHER due job in that call for a slow store to cost anything.
     """
     job = jobs[name]
     wake_id = ledger.new_id("w-")
@@ -1077,26 +1735,67 @@ def _execute(
                     base, jobs, name, wake_id, pass_id, invoker, outcome, started_at, executed=False
                 ), outcome
             job = jobs[name] = fresh
-        ledger.append(
-            base,
-            {
-                "wake_id": wake_id,
-                "pass_id": pass_id,
-                "invoker": invoker,
-                "job": name,
-                "event": "started",
-                "reason": reason,
-                "ts": started_at,
-                "run": job.get("run"),
-                "timeout_s": job.get("timeout_s"),
-                "detach": job.get("detach"),
-            },
-        )
+        started_row = {
+            "wake_id": wake_id,
+            "pass_id": pass_id,
+            "invoker": invoker,
+            "job": name,
+            "event": "started",
+            "reason": reason,
+            "ts": started_at,
+            "run": job.get("run"),
+            "timeout_s": job.get("timeout_s"),
+            "detach": job.get("detach"),
+        }
+        if prediction is not None:
+            # `predict: warn|skip` fired through (UNJUDGED, or a good-outcome
+            # verdict, or a bad one forced by the no-starvation rule): never
+            # silently dropped, same as a skipped one is recorded via
+            # `skipped_predicted` -- see `_run_due_pass`.
+            started_row["prediction"] = prediction
+        ledger.append(base, started_row)
+        # report.memory: recall this job's own past wakes into its env BEFORE
+        # it runs -- fails open to "[]", and the env mutation is undone in
+        # `finally` whether the executor returns, raises, or is a detached
+        # spawn (the child already copied the parent's environment by then).
+        # Off (the default) touches neither `os.environ` nor `awm` at all.
+        #
+        # The call is bounded by what's LEFT of this whole PASS's shared
+        # recall budget, not a fresh MEMORY_TIMEOUT_S per job: a degraded
+        # store can cost this pass at most one timeout in total, no matter
+        # how many memory-enabled jobs are due in it. Once that budget is
+        # spent, later jobs skip the call entirely rather than queue a
+        # second wait behind the first -- `remember` never touches this
+        # budget at all, since `_record` never waits on it.
+        memory_on = bool(_report_block(job).get("memory"))
+        had_memory_env = prior_memory_env = None
+        if memory_on:
+            if memory_deadline is None:
+                remaining = MEMORY_TIMEOUT_S
+            else:
+                remaining = min(MEMORY_TIMEOUT_S, memory_deadline - time.monotonic())
+            if remaining <= 0:
+                memory_value = "[]"
+                problem = "memory_recall_skipped_pass_budget_exhausted"
+            else:
+                memory_value, problem = _memory_recall_json(base, name, timeout_s=remaining)
+            if problem:
+                _report_error_row(base, name, wake_id, pass_id, invoker, problem)
+                memory_value = "[]"
+            had_memory_env = MEMORY_ENV in os.environ
+            prior_memory_env = os.environ.get(MEMORY_ENV)
+            os.environ[MEMORY_ENV] = memory_value
         wake = {"wake_id": wake_id, "pass_id": pass_id, "job": name, "on_spawn": handle.note_child}
         try:
             outcome = executor(job, wake)
         except Exception as exc:  # noqa: BLE001 - an executor that raises is still a wake to close
             outcome = Outcome("error", f"executor_crashed:{type(exc).__name__}:{exc}")
+        finally:
+            if memory_on:
+                if had_memory_env:
+                    os.environ[MEMORY_ENV] = prior_memory_env
+                else:
+                    os.environ.pop(MEMORY_ENV, None)
         if not isinstance(outcome, Outcome):
             outcome = Outcome("error", f"executor_returned_{type(outcome).__name__}")
         elif not isinstance(outcome.reason, str) or not outcome.reason.strip():
@@ -1381,6 +2080,10 @@ def _run_due_pass(
     now = clock.now_utc()
     counts = state["counts"]
     counts["jobs"] = len(jobs)
+    # ONE recall budget for the WHOLE pass, shared by every memory-enabled
+    # job dispatched below (see `_execute`): a degraded `awm` store can cost
+    # this pass at most one `MEMORY_TIMEOUT_S`, never one per job.
+    memory_deadline = time.monotonic() + MEMORY_TIMEOUT_S
     for name in sorted(jobs):
         if jobs.get(name) is not None:
             # An answered card is applied BEFORE dueness is judged, so a job
@@ -1445,9 +2148,47 @@ def _run_due_pass(
                     print(f"  SKIPPED_MISSED {name} ({windows} window(s) dropped)")
                 continue
             reason = f"catch_up_once:{windows}_windows"
+        # `predict: warn|skip` -- a side channel, never load-bearing: a
+        # missing/broken awpredict or a timed-out call degrades to UNJUDGED
+        # and the job fires exactly as if predict were off. Only `skip` can
+        # ever refuse to fire, and only on a bad verdict, and only once in a
+        # row (see `_predict_should_skip`'s no-starvation rule).
+        predict_policy = job.get("predict") or "off"
+        prediction = None
+        if predict_policy != "off":
+            prediction = predict_verdict(base, name)
+            if prediction["failure"]:
+                _report_error_row(
+                    base, name, ledger.new_id("w-"), pass_id, invoker, prediction["reason"]
+                )
+            if predict_policy == "skip" and _predict_should_skip(base, name, prediction):
+                jobs = state["jobs"] = _skip(
+                    base,
+                    jobs,
+                    name,
+                    pass_id,
+                    invoker,
+                    "skipped_predicted",
+                    json.dumps(prediction, sort_keys=True),
+                )
+                counts["skipped"] += 1
+                if not quiet:
+                    print(f"  SKIPPED_PREDICTED {name} ({prediction['reason']})")
+                continue
         if not quiet:
             print(f"Running {name}...")
-        jobs, outcome = _execute(base, jobs, name, pass_id, invoker, executor, reason, recheck=True)
+        jobs, outcome = _execute(
+            base,
+            jobs,
+            name,
+            pass_id,
+            invoker,
+            executor,
+            reason,
+            recheck=True,
+            memory_deadline=memory_deadline,
+            prediction=prediction,
+        )
         state["jobs"] = jobs
         if outcome.state == "skipped_overlap":
             counts["overlapped"] += 1
@@ -1462,6 +2203,13 @@ def _run_due_pass(
             print(f"  FAIL {name} {outcome.state} ({outcome.reason})", file=sys.stderr)
         elif not quiet:
             print(f"  {outcome.state.upper()} {name} ({outcome.reason})")
+    # Every due job has already had its own turn above -- draining here can
+    # only add to the PASS's total time, never to any job's wait for the one
+    # before it. Bounded and best-effort: a fact this pass's `remember`
+    # queued should be recallable by the time the pass reports itself done
+    # (what the round-trip explain/recall path relies on), but a store still
+    # wedged past the drain budget must not hang the pass forever either.
+    _memory_drain(MEMORY_DRAIN_TIMEOUT_S)
     return worst
 
 
@@ -1579,6 +2327,13 @@ def _would_do(
     windows = _missed_windows_to_record(base, name, job, now, gap)
     if windows and job.get("missed") == "skip":
         return "hold", f"missed_policy_skip:{windows}_windows"
+    # Mirrors `_run_due_pass`'s predict gate exactly, so `--dry-run` never
+    # disagrees with the pass it predicts. Only `predict: skip` can turn a
+    # `would_fire` into a `hold`; `warn` and `off` never touch this verdict.
+    if (job.get("predict") or "off") == "skip":
+        prediction = predict_verdict(base, name)
+        if _predict_should_skip(base, name, prediction):
+            return "hold", f"would_skip_predicted:{prediction['reason']}"
     if windows:
         return "would_fire", f"catch_up_once:{windows}_windows"
     return "would_fire", "due"
@@ -1645,6 +2400,10 @@ def cmd_run(args, executor: Optional[Executor] = None) -> int:
     _jobs, outcome = _execute(
         base, jobs, name, pass_id, "manual", executor, "forced" if force else "manual"
     )
+    # A single manual run has no OTHER due job to protect, so draining here
+    # costs nothing this command need avoid -- and it is what makes a fact
+    # `run` just remembered recallable by an `explain` invoked right after.
+    _memory_drain(MEMORY_DRAIN_TIMEOUT_S)
     line = f"{outcome.state} {name} ({outcome.reason})"
     if outcome.state in ledger.BAD_STATES:
         print(line, file=sys.stderr)
@@ -1659,6 +2418,9 @@ def cmd_run(args, executor: Optional[Executor] = None) -> int:
 
 
 def cmd_history(args) -> int:
+    import_fleet = getattr(args, "import_fleet", None)
+    if import_fleet:
+        return _cmd_history_import_fleet(Path(import_fleet), bool(getattr(args, "json", False)))
     base = store.home()
     since = None
     if getattr(args, "since", None):
@@ -1707,6 +2469,8 @@ def _spec_line(job: dict) -> str:
     bits.append("enabled" if job.get("enabled", True) else "DISABLED")
     bits.append(f"timeout {job.get('timeout_s')}s")
     bits.append(f"missed={job.get('missed')}")
+    if job.get("predict", "off") != "off":
+        bits.append(f"predict={job['predict']}")
     if (job.get("executor") or "shell") != "shell":
         # Named only when it is not the default, and named at all because
         # `explain` prints `run` under the heading "command": a URL or a
@@ -1789,6 +2553,12 @@ def cmd_explain(args) -> int:
         )
         print(f"next due     {_due_phrase((due - now).total_seconds())} ({clock.iso(due)})")
         print(f"missed windows: {clock.missed_windows(job, now)}")
+        if _report_block(job).get("memory"):
+            # The same recall the START hook would make on the next wake --
+            # computed live and read-only, never from a stored copy, so
+            # `explain` can never show a payload staler than the store.
+            payload, problem = _memory_recall_json(base, name)
+            print(f"memory       unavailable: {problem}" if problem else f"memory       {payload}")
     ticks = [row for row in rows if row.get("event") == "tick"]
     if not ticks:
         print("last tick    none on record")
@@ -1830,6 +2600,38 @@ def cmd_explain(args) -> int:
         print(f"recent       {len(recent)} row(s), newest last:")
         for row in recent:
             print(f"             {_describe_row(row)}")
+    return 0
+
+
+def cmd_predict(args) -> int:
+    """The predict gate's live verdict for one job -- read-only, exactly what
+    the next due-check would compute, and nothing it would write. Works for
+    ``predict: off`` too (the gate is simply not wired into that job's own
+    pass), so an operator can try a policy out before setting it.
+    """
+    name = _name(args)
+    base = store.home()
+    jobs = store.load(base)
+    job = jobs.get(name)
+    if job is None:
+        print("Not found", file=sys.stderr)
+        return 1
+    result = predict_verdict(base, name)
+    if getattr(args, "json", False):
+        print(json.dumps({"job": name, "policy": job.get("predict", "off"), **result}))
+        return 0
+    print(f"job          {name}")
+    print(f"policy       {job.get('predict', 'off')}")
+    print(f"verdict      {result['verdict']}")
+    print(f"reason       {result['reason']}")
+    print(f"confidence   {result['confidence']}")
+    print(f"mode         {result['mode']}")
+    print(f"judged rows  {result['rows']}")
+    if (job.get("predict") or "off") == "skip" and result["verdict"] == "bad":
+        if _predict_should_skip(base, name, result):
+            print("next due-check: SKIP (skipped_predicted)")
+        else:
+            print("next due-check: fires anyway (no-starvation: last row was skipped_predicted)")
     return 0
 
 
@@ -2449,8 +3251,8 @@ def prewarm_plan(
 ) -> Tuple[List[dict], List[dict]]:
     """(proposals, skipped) for ``day``. Reads only; judges nothing live.
 
-    At most ONE proposal per job name. ``_slug`` strips the ``aither-`` /
-    ``aitheros-`` prefix as well as slugging, so two different units can slug
+    At most ONE proposal per job name. ``_slug`` strips each ``NAME_PREFIXES``
+    vendor prefix as well as slugging, so two different units can slug
     to the same name -- and ``--apply`` used to write both records under that
     one key, silently keeping the last and reporting "added" for both. A name
     already claimed by an earlier unit is a SKIP that names the collision:
@@ -2645,6 +3447,402 @@ def cmd_prewarm(args) -> int:
     return 1 if refused or collisions else 0
 
 
+# ------------------------------------------------------------- import-routine
+
+#: Default glob this ships with -- the platform's own routines directory. A
+#: stranger installing this package points `paths` at their own directory;
+#: nothing here assumes that tree exists.
+DEFAULT_ROUTINES_GLOB = "AitherOS/config/routines/*.yaml"
+#: Every job `import-routine` writes carries this prefix, same discipline as
+#: `prewarm-` above -- so an imported job is nameable as a class, never
+#: confusable with one an operator added by hand.
+ROUTINE_JOB_PREFIX = "routine-"
+
+
+def _routine_job_name(routine_id: str) -> str:
+    return f"{ROUTINE_JOB_PREFIX}{_slug(routine_id)}"
+
+
+def _translate_routine_schedule(schedule: object) -> Tuple[Optional[str], List[str]]:
+    """(``every`` string, notes) if importable, or (``None``, [refusal]).
+
+    Priority mirrors the platform's own routines manager exactly: check
+    ``every_hours`` first, then ``every_minutes``, then ``cron`` (refused by
+    name -- it is not in the allowed set), then ``type == "interval"``. A
+    routine declaring both ``type: interval`` and ``every_minutes`` is read
+    as ``every_minutes``, same as the platform reads it -- checking
+    ``schedule.type`` alone would translate a job differently than the
+    platform actually runs it.
+    """
+    if not isinstance(schedule, dict):
+        return None, ["schedule is missing or not a mapping"]
+    if "every_hours" in schedule:
+        try:
+            val = float(schedule["every_hours"])
+        except (TypeError, ValueError):
+            return None, [f"schedule.every_hours is not a number: {schedule['every_hours']!r}"]
+        return f"{val:g}h", []
+    if "every_minutes" in schedule:
+        try:
+            val = float(schedule["every_minutes"])
+        except (TypeError, ValueError):
+            return None, [f"schedule.every_minutes is not a number: {schedule['every_minutes']!r}"]
+        return f"{val:g}m", []
+    if "cron" in schedule:
+        return None, [
+            f"schedule.cron={schedule['cron']!r} is not importable -- awrise has no cron "
+            "primitive, and a cron schedule is refused rather than approximated"
+        ]
+    schedule_type = schedule.get("type", "interval")
+    if schedule_type == "interval":
+        interval_minutes = schedule.get("interval_minutes", 60)
+        try:
+            val = float(interval_minutes)
+        except (TypeError, ValueError):
+            return None, [f"schedule.interval_minutes is not a number: {interval_minutes!r}"]
+        notes = []
+        if schedule.get("jitter"):
+            notes.append(
+                f"source jitter (jitter_minutes={schedule.get('jitter_minutes')!r}) is not "
+                "carried over -- awrise runs a job on a fixed interval with no per-job jitter"
+            )
+        return f"{val:g}m", notes
+    return None, [f"schedule.type={schedule_type!r} is not importable (only interval is)"]
+
+
+def _translate_routine_action(action: object) -> Tuple[Optional[dict], List[str]]:
+    """(``{"run", "cwd"?, "timeout_s"?}``, notes) if importable, else
+    (``None``, [refusal]).
+
+    Only ``shell_command`` is importable -- the platform's default action
+    type when none is named is ``http_call``, refused by name here rather
+    than silently skipped. Only ``action.command`` becomes the job's ``run``
+    string. A non-empty ``action.args`` is refused by name, never
+    concatenated: the platform's own shell executor
+    (``lib/core/ActionExecutor.py::_shell_command``) spawns
+    ``[shell, shell_flag, command] + args`` via ``create_subprocess_exec`` --
+    every element of ``args`` becomes a separate PROCESS argument (visible to
+    the shell only as ``$0``/``$1``/... *within* ``command``'s own text),
+    never appended into the parsed command string. awrise's job model has one
+    opaque ``run`` string that ``executors.run_shell`` hands whole to
+    ``subprocess.Popen(run, shell=True)``, with no channel to carry that
+    split -- joining ``command`` and ``args`` with spaces (the pre-fix
+    behaviour) silently built a DIFFERENT command than ActionExecutor
+    actually runs (``infra_canary.yaml``'s ``host_gateway_canary`` is exactly
+    this shape live: ``command: python``, ``args: [-c, <script>]``). Refused
+    here, same as ``cron``, rather than silently approximated.
+    """
+    if not isinstance(action, dict):
+        return None, ["action is missing or not a mapping"]
+    action_type = action.get("type", "http_call")
+    if action_type != "shell_command":
+        return None, [f"action.type={action_type!r} is not importable (only shell_command is)"]
+    command = action.get("command")
+    if not isinstance(command, str) or not command.strip():
+        return None, ["action.command is required and must be a non-empty string"]
+    args = action.get("args") or []
+    if not isinstance(args, list) or not all(isinstance(a, (str, int, float)) for a in args):
+        return None, ["action.args must be a list of strings"]
+    if args:
+        return None, [
+            "action.args is non-empty -- refused, not approximated. "
+            "ActionExecutor._shell_command runs `<shell> <flag> <command> <args...>` as "
+            "separate process arguments (positional parameters the shell sees only as "
+            "$0/$1/... inside `command`'s own text), never appended to the parsed command "
+            "string; awrise's job model has one opaque `run` string with no channel for "
+            "that split, so concatenating would silently execute a DIFFERENT command than "
+            f"the platform actually runs (action.command={command!r}, action.args={args!r})"
+        ]
+    result: dict = {"run": command.strip()}
+    cwd = action.get("cwd")
+    if cwd is not None:
+        if not isinstance(cwd, str):
+            return None, ["action.cwd must be a string"]
+        result["cwd"] = cwd
+    timeout = action.get("timeout_seconds")
+    if timeout is not None:
+        try:
+            result["timeout_s"] = int(timeout)
+        except (TypeError, ValueError):
+            return None, [f"action.timeout_seconds is not an integer: {timeout!r}"]
+    return result, []
+
+
+def import_routine_plan(paths: List[Path], jobs: dict) -> Tuple[List[dict], List[dict]]:
+    """(proposals, skipped). Reads only; never writes.
+
+    Every translated command is classified through the command guard here,
+    at PLAN time -- so a plan/dry-run and an `--apply` run refuse exactly the
+    same routines for exactly the same reasons. The only thing `--apply`
+    changes is whether a NON-refused proposal actually gets written.
+    """
+    proposals: List[dict] = []
+    skipped: List[dict] = []
+    claimed: Dict[str, str] = {}
+    for path in paths:
+        source = str(path)
+
+        def drop(why: str, refused: bool = False, source: str = source) -> None:
+            skipped.append({"source": source, "why": why, "refused": refused})
+
+        try:
+            text = path.read_text(encoding="utf-8")
+        except OSError as exc:
+            drop(f"unreadable: {type(exc).__name__}: {exc}")
+            continue
+        try:
+            import yaml  # noqa: PLC0415 - optional by contract, guarded here only
+        except ImportError:
+            drop(
+                "PyYAML is not installed -- pip install 'awrise[routines]'",
+                refused=True,
+            )
+            continue
+        try:
+            doc = yaml.safe_load(text)
+        except yaml.YAMLError as exc:
+            drop(f"invalid YAML: {exc}")
+            continue
+        if not isinstance(doc, dict):
+            drop("document root is not a mapping")
+            continue
+        entries = doc.get("routines")
+        if not isinstance(entries, list):
+            drop("no `routines:` list in the document")
+            continue
+        for index, routine in enumerate(entries):
+            entry_source = f"{source}#{index}"
+            if not isinstance(routine, dict):
+                drop("routine entry is not a mapping", source=entry_source)
+                continue
+            routine_id = str(routine.get("id") or "").strip()
+            if not routine_id:
+                drop("routine has no `id`", source=entry_source)
+                continue
+            entry_source = f"{source}#{index} ({routine_id})"
+            every, sched_notes = _translate_routine_schedule(routine.get("schedule"))
+            if every is None:
+                drop(
+                    sched_notes[0] if sched_notes else "unschedulable",
+                    refused=True,
+                    source=entry_source,
+                )
+                continue
+            translated, action_notes = _translate_routine_action(routine.get("action"))
+            if translated is None:
+                drop(
+                    action_notes[0] if action_notes else "no usable action",
+                    refused=True,
+                    source=entry_source,
+                )
+                continue
+            run = translated["run"]
+            block = command_guard.classify(run)
+            if block is not None:
+                _pattern, reason = block
+                drop(
+                    f"refused by the command guard: {reason}",
+                    refused=True,
+                    source=entry_source,
+                )
+                continue
+            meta = command_guard.find_metacharacter(run)
+            if meta is not None:
+                drop(
+                    f"refused: shell metacharacter {meta!r} in the translated command -- "
+                    "routine commands run through a real shell, never sanitised",
+                    refused=True,
+                    source=entry_source,
+                )
+                continue
+            name = _routine_job_name(routine_id)
+            try:
+                store.validate_name(name)
+            except ValueError as exc:
+                drop(
+                    f"{name!r} is not a usable job name: {exc}",
+                    refused=True,
+                    source=entry_source,
+                )
+                continue
+            if name in claimed:
+                drop(
+                    f"job name {name!r} is already proposed for {claimed[name]} -- one job "
+                    f"cannot serve two routine ids",
+                    refused=True,
+                    source=entry_source,
+                )
+                continue
+            claimed[name] = entry_source
+            proposals.append(
+                {
+                    "job": name,
+                    "routine_id": routine_id,
+                    "source": entry_source,
+                    "every": every,
+                    "run": run,
+                    "cwd": translated.get("cwd"),
+                    "timeout_s": translated.get("timeout_s"),
+                    "notes": sched_notes + action_notes,
+                    "exists": name in jobs,
+                }
+            )
+    return proposals, skipped
+
+
+def cmd_import_routine(args) -> int:
+    """Print a plan translating routines/*.yaml into awrise jobs; only
+    `--apply --i-am-the-runner` together actually schedule the non-refused
+    ones. `--apply` alone is refused outright -- the runner flag is a second,
+    explicit confirmation that this is about to write real jobs sourced from
+    someone else's config file, not this operator's own `add`.
+    """
+    pattern = getattr(args, "paths", None) or DEFAULT_ROUTINES_GLOB
+    paths = sorted(Path(p) for p in glob.glob(pattern))
+    apply = bool(getattr(args, "apply", False))
+    i_am_the_runner = bool(getattr(args, "i_am_the_runner", False))
+    if apply and not i_am_the_runner:
+        print(
+            "Error: --apply without --i-am-the-runner is refused -- nothing was written",
+            file=sys.stderr,
+        )
+        return 1
+    jobs = store.load()
+    proposals, skipped = import_routine_plan(paths, jobs)
+    applied: List[dict] = []
+    if apply:
+        for proposal in proposals:
+            if proposal["exists"]:
+                applied.append({"job": proposal["job"], "state": "exists"})
+                continue
+            job = store.new_job(every=proposal["every"], run=proposal["run"], interval_s=0.0)
+            if proposal.get("cwd") is not None:
+                job["cwd"] = proposal["cwd"]
+            if proposal.get("timeout_s") is not None:
+                job["timeout_s"] = proposal["timeout_s"]
+            try:
+                _validate_spec(job, allow_overrun=False, name=proposal["job"])
+            except FatalError as exc:
+                applied.append(
+                    {
+                        "job": proposal["job"],
+                        "state": "refused:invalid_spec",
+                        "reason": str(exc),
+                    }
+                )
+                continue
+            jobs[proposal["job"]] = job
+            applied.append({"job": proposal["job"], "state": "added"})
+        if applied:
+            store.save(jobs)
+    refused = [d for d in skipped if d.get("refused")]
+    apply_refused = [a for a in applied if a["state"].startswith("refused:")]
+    if getattr(args, "json", False):
+        print(
+            json.dumps(
+                {
+                    "paths": [str(p) for p in paths],
+                    "proposals": proposals,
+                    "skipped": skipped,
+                    "applied": applied,
+                },
+                indent=2,
+                sort_keys=True,
+            )
+        )
+        return 1 if refused or apply_refused else 0
+    print(f"routines: {pattern} -> {len(paths)} file(s)")
+    for proposal in proposals:
+        state = "exists " if proposal["exists"] else "propose"
+        print(
+            f"  {state} {proposal['job']:<28} every {proposal['every']:<8} "
+            f"<- {proposal['routine_id']} ({proposal['source']})"
+        )
+        print(f"           run: {proposal['run']}")
+        for note in proposal["notes"]:
+            print(f"           note: {note}")
+    for drop in skipped:
+        label = "REFUSE " if drop.get("refused") else "skip   "
+        print(f"  {label} {drop['source']:<28} {drop['why']}")
+    if not proposals:
+        print("Nothing to import: no routine entry translated cleanly.")
+    elif not apply:
+        print(
+            f"{len(proposals)} proposal(s); nothing was scheduled -- rerun with "
+            f"--apply --i-am-the-runner"
+        )
+    else:
+        added = sum(1 for item in applied if item["state"] == "added")
+        print(f"{added} job(s) added, {len(applied) - added} already present or refused")
+    if refused:
+        print(f"{len(refused)} routine(s) NOT imported -- refused by name above.")
+    if apply_refused:
+        print(
+            f"{len(apply_refused)} proposal(s) NOT written at apply time -- refused by name above."
+        )
+    return 1 if refused or apply_refused else 0
+
+
+def _cmd_history_import_fleet(path: Path, as_json: bool) -> int:
+    """Read-only, UNCONDITIONALLY: cross-reference a routine's last-executed
+    timestamps against jobs `import-routine` has already written. There is
+    no write path here at all, regardless of any flag -- this verb only ever
+    reads the file it was given and the store.
+    """
+    try:
+        text = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        print(f"Error: cannot read {path}: {exc}", file=sys.stderr)
+        return 2
+    try:
+        data = json.loads(text)
+    except ValueError as exc:
+        print(f"Error: {path} is not valid JSON: {exc}", file=sys.stderr)
+        return 2
+    if not isinstance(data, dict):
+        print(f"Error: {path} root is not an object", file=sys.stderr)
+        return 2
+    jobs = store.load()
+    rows: List[dict] = []
+    refused: List[Tuple[str, str]] = []
+    for routine_id, raw in data.items():
+        stamp = None
+        problem = None
+        if isinstance(raw, str):
+            try:
+                stamp = clock.parse_ts(raw)
+            except ValueError as exc:
+                problem = str(exc)
+            if stamp is None and problem is None:
+                problem = "not a parseable timestamp"
+        else:
+            problem = f"value is not a string: {raw!r}"
+        if problem is not None:
+            refused.append((str(routine_id), problem))
+            continue
+        job_name = _routine_job_name(str(routine_id))
+        rows.append(
+            {
+                "routine_id": routine_id,
+                "last_executed": clock.iso(stamp),
+                "job": job_name,
+                "imported": job_name in jobs,
+            }
+        )
+    if as_json:
+        print(json.dumps({"rows": rows, "refused": refused}, indent=2, sort_keys=True))
+    else:
+        print(f"{'Routine':<30} {'Last executed (UTC)':<26} {'Imported job':<34} Status")
+        for row in rows:
+            print(
+                f"{str(row['routine_id']):<30} {row['last_executed']:<26} "
+                f"{row['job']:<34} {'imported' if row['imported'] else 'not imported'}"
+            )
+        for routine_id, why in refused:
+            print(f"  REFUSE {routine_id}: {why}")
+    return 1 if refused else 0
+
+
 # ------------------------------------------------------------------- main
 
 
@@ -2660,6 +3858,11 @@ def _build_parser() -> argparse.ArgumentParser:
     add_p.add_argument("--run", required=True, help="shell command")
     add_p.add_argument("--timeout", type=int, default=None, help="seconds (default 300)")
     add_p.add_argument("--cwd", default=None)
+    add_p.add_argument(
+        "--receipt", default=None,
+        help="JSON file this job's child writes its own verdict to; WL006 reads its "
+             "exit_code instead of abstaining on a detached wake",
+    )
     add_p.add_argument("--at", default=None, help="HH:MM UTC daily anchor")
     add_p.add_argument("--allow-overrun", action="store_true")
     add_p.add_argument("--disabled", action="store_true")
@@ -2791,6 +3994,14 @@ def _build_parser() -> argparse.ArgumentParser:
         help="verdict instead of rows: drift or absence per job; "
         "exit 2 on a ledger too young to judge",
     )
+    hist_p.add_argument(
+        "--import-fleet",
+        dest="import_fleet",
+        default=None,
+        metavar="PATH",
+        help="read-only, unconditionally: cross-reference a routine_last_executed.json "
+        "against jobs already written by `import-routine` -- never writes anything",
+    )
     hist_p.set_defaults(func=cmd_history)
 
     status_p = subs.add_parser("status", help="per-job verdict; exit 1 on a failing job")
@@ -2800,6 +4011,13 @@ def _build_parser() -> argparse.ArgumentParser:
     exp_p.add_argument("--name", required=True)
     exp_p.add_argument("--since", default=None, help="ledger window to read (default 30d)")
     exp_p.set_defaults(func=cmd_explain)
+
+    pred_p = subs.add_parser(
+        "predict", help="the predict gate's live verdict for one job (read-only)"
+    )
+    pred_p.add_argument("--name", required=True)
+    pred_p.add_argument("--json", action="store_true")
+    pred_p.set_defaults(func=cmd_predict)
 
     prune_p = subs.add_parser("prune", help="drop ledger day files older than a window")
     prune_p.add_argument("--keep", default="30d", help="window to keep (default 30d)")
@@ -2920,6 +4138,27 @@ def _build_parser() -> argparse.ArgumentParser:
         "an empty one (refused while anything readable is there)",
     )
     rec_p.set_defaults(func=cmd_reconcile)
+
+    imp_p = subs.add_parser(
+        "import-routine",
+        help="translate routines/*.yaml schedules into awrise jobs "
+        "(prints a plan; --apply --i-am-the-runner schedules)",
+    )
+    imp_p.add_argument(
+        "paths",
+        nargs="?",
+        default=DEFAULT_ROUTINES_GLOB,
+        help=f"glob of routine YAML files (default {DEFAULT_ROUTINES_GLOB!r})",
+    )
+    imp_p.add_argument("--apply", action="store_true", help="actually add the proposed jobs")
+    imp_p.add_argument(
+        "--i-am-the-runner",
+        dest="i_am_the_runner",
+        action="store_true",
+        help="required before --apply writes anything; --apply without it is refused",
+    )
+    imp_p.add_argument("--json", action="store_true")
+    imp_p.set_defaults(func=cmd_import_routine)
     return parser
 
 

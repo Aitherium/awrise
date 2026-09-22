@@ -21,6 +21,7 @@ holding the output pipe cannot keep the pass alive after its parent is dead.
 A ``detach`` job gets no pipes at all: its wake closes ``detached`` at spawn
 and the child outlives the pass.
 """
+
 from __future__ import annotations
 
 import contextlib
@@ -45,8 +46,18 @@ from . import clock, ledger
 
 #: Spec keys this module reads (asserted against store.SPEC_DEFAULTS by the
 #: self-test, together with the keys the CLI reads).
-READS = ("run", "timeout_s", "cwd", "detach", "executor", "bearer_file", "permission_mode",
-         "wake", "park_after", "wake_required")
+READS = (
+    "run",
+    "timeout_s",
+    "cwd",
+    "detach",
+    "executor",
+    "bearer_file",
+    "permission_mode",
+    "wake",
+    "park_after",
+    "wake_required",
+)
 
 #: After the group is signalled TERM, this long before KILL (POSIX).
 KILL_GRACE_S = 1.0
@@ -116,8 +127,12 @@ def kill_tree(proc: subprocess.Popen) -> str:
     when the kill was not the clean one ('' when it was)."""
     if sys.platform == "win32":
         try:
-            done = subprocess.run(["taskkill", "/T", "/F", "/PID", str(proc.pid)],
-                                  stdin=subprocess.DEVNULL, capture_output=True, timeout=15)
+            done = subprocess.run(
+                ["taskkill", "/T", "/F", "/PID", str(proc.pid)],
+                stdin=subprocess.DEVNULL,
+                capture_output=True,
+                timeout=15,
+            )
             note = "" if done.returncode == 0 else f"; taskkill_rc_{done.returncode}"
         except (OSError, subprocess.TimeoutExpired) as exc:
             note = f"; taskkill_failed:{type(exc).__name__}"
@@ -147,8 +162,9 @@ def kill_tree(proc: subprocess.Popen) -> str:
     return ""
 
 
-def _run_process(job: dict, wake: dict, command, *, shell: bool,
-                 missing_reason: str = "spawn_failed") -> Outcome:
+def _run_process(
+    job: dict, wake: dict, command, *, shell: bool, missing_reason: str = "spawn_failed"
+) -> Outcome:
     """Spawn ``command``, wait for it inside the job's timeout, return an Outcome.
 
     Shared by every executor that ends in a child process -- shell, python and
@@ -170,8 +186,15 @@ def _run_process(job: dict, wake: dict, command, *, shell: bool,
     on_spawn = wake.get("on_spawn") if isinstance(wake, dict) else None
     stdio = subprocess.DEVNULL if detach else subprocess.PIPE
     try:
-        proc = subprocess.Popen(command, shell=shell, cwd=cwd, stdin=subprocess.DEVNULL,
-                                stdout=stdio, stderr=stdio, **_spawn_kwargs(detach))
+        proc = subprocess.Popen(
+            command,
+            shell=shell,
+            cwd=cwd,
+            stdin=subprocess.DEVNULL,
+            stdout=stdio,
+            stderr=stdio,
+            **_spawn_kwargs(detach),
+        )
     except FileNotFoundError as exc:
         return Outcome("error", f"{missing_reason}:{exc.filename or exc}")
     except OSError as exc:
@@ -190,9 +213,14 @@ def _run_process(job: dict, wake: dict, command, *, shell: bool,
         except subprocess.TimeoutExpired as exc:
             out, err = exc.stdout, exc.stderr
             note += "; pipe_still_open"
-        return Outcome("timeout", f"killed after {timeout:g}s{note}", exit_code=proc.returncode,
-                       stdout_tail=ledger.tail(out), stderr_tail=ledger.tail(err),
-                       child_pid=proc.pid)
+        return Outcome(
+            "timeout",
+            f"killed after {timeout:g}s{note}",
+            exit_code=proc.returncode,
+            stdout_tail=ledger.tail(out),
+            stderr_tail=ledger.tail(err),
+            child_pid=proc.pid,
+        )
     except Exception as exc:  # noqa: BLE001 - a leaked child is the worse outcome
         # The wait itself failed (an I/O error on the pipe, a deadline the
         # platform cannot express). The child is already running, so the one
@@ -201,12 +229,16 @@ def _run_process(job: dict, wake: dict, command, *, shell: bool,
         note = kill_tree(proc)
         with contextlib.suppress(Exception):
             proc.communicate(timeout=KILL_DRAIN_S)
-        return Outcome("error", f"wait_failed:{type(exc).__name__}:{exc}{note}",
-                       child_pid=proc.pid)
+        return Outcome("error", f"wait_failed:{type(exc).__name__}:{exc}{note}", child_pid=proc.pid)
     state = "success" if proc.returncode == 0 else "failure"
-    return Outcome(state, f"exit_{proc.returncode}", exit_code=proc.returncode,
-                   stdout_tail=ledger.tail(out), stderr_tail=ledger.tail(err),
-                   child_pid=proc.pid)
+    return Outcome(
+        state,
+        f"exit_{proc.returncode}",
+        exit_code=proc.returncode,
+        stdout_tail=ledger.tail(out),
+        stderr_tail=ledger.tail(err),
+        child_pid=proc.pid,
+    )
 
 
 def run_shell(job: dict, wake: dict) -> Outcome:
@@ -217,6 +249,7 @@ def run_shell(job: dict, wake: dict) -> Outcome:
 
 
 # ------------------------------------------------------------------- python
+
 
 def run_python(job: dict, wake: dict) -> Outcome:
     """Run the job's ``run`` as Python source in ITS OWN interpreter.
@@ -232,11 +265,13 @@ def run_python(job: dict, wake: dict) -> Outcome:
     source = (job.get("run") or "").strip()
     if not source:
         return Outcome("skipped_empty", "empty_command")
-    return _run_process(job, wake, [sys.executable, "-c", source], shell=False,
-                        missing_reason="no_interpreter")
+    return _run_process(
+        job, wake, [sys.executable, "-c", source], shell=False, missing_reason="no_interpreter"
+    )
 
 
 # --------------------------------------------------------------------- http
+
 
 def bearer_roots() -> List[Path]:
     """The only directories a bearer file may live in.
@@ -271,8 +306,11 @@ def bearer_path_problem(raw: object) -> Optional[str]:
     path = Path(os.path.realpath(os.path.expanduser(raw.strip())))
     roots = bearer_roots()
     if not any(path == root or root in path.parents for root in roots):
-        return ("must live under " + " or ".join(str(r) for r in roots)
-                + " (a token path outside it is an arbitrary-file read)")
+        return (
+            "must live under "
+            + " or ".join(str(r) for r in roots)
+            + " (a token path outside it is an arbitrary-file read)"
+        )
     return None
 
 
@@ -304,8 +342,9 @@ class _NoRedirects(urllib.request.HTTPRedirectHandler):
     """
 
     def redirect_request(self, req, fp, code, msg, headers, newurl):
-        raise urllib.error.HTTPError(req.full_url, code,
-                                     f"redirect refused to {newurl}", headers, fp)
+        raise urllib.error.HTTPError(
+            req.full_url, code, f"redirect refused to {newurl}", headers, fp
+        )
 
 
 _OPENER = urllib.request.build_opener(_NoRedirects)
@@ -352,8 +391,11 @@ def run_http(job: dict, wake: dict) -> Outcome:
         return Outcome("skipped_empty", "empty_command")
     method, url, body, problem = _parse_http_run(source)
     if problem is not None:
-        return Outcome("error", problem) if problem != "empty_command" else Outcome(
-            "skipped_empty", "empty_command")
+        return (
+            Outcome("error", problem)
+            if problem != "empty_command"
+            else Outcome("skipped_empty", "empty_command")
+        )
     token, refusal = read_bearer(job)
     if refusal is not None:
         return refusal
@@ -369,17 +411,18 @@ def run_http(job: dict, wake: dict) -> Outcome:
         with _OPENER.open(request, timeout=timeout) as response:
             payload = response.read(64 * 1024)
             code = int(response.status or 0)
-        return Outcome("success", f"http_{code}", exit_code=code,
-                       stdout_tail=ledger.tail(payload))
+        return Outcome("success", f"http_{code}", exit_code=code, stdout_tail=ledger.tail(payload))
     except urllib.error.HTTPError as exc:
         payload = b""
         with contextlib.suppress(Exception):
             payload = exc.read(64 * 1024)
         if exc.code in (401, 403):
-            return Outcome("error", f"http_{exc.code}", exit_code=exc.code,
-                           stderr_tail=ledger.tail(payload))
-        return Outcome("failure", f"http_{exc.code}", exit_code=exc.code,
-                       stderr_tail=ledger.tail(payload))
+            return Outcome(
+                "error", f"http_{exc.code}", exit_code=exc.code, stderr_tail=ledger.tail(payload)
+            )
+        return Outcome(
+            "failure", f"http_{exc.code}", exit_code=exc.code, stderr_tail=ledger.tail(payload)
+        )
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, socket.gaierror):
             return Outcome("skipped_unresolvable", f"dns:{host}")
@@ -395,6 +438,7 @@ def run_http(job: dict, wake: dict) -> Outcome:
 
 
 # -------------------------------------------------------------------- awrun
+
 
 def _awrun_store():
     """The local run queue, or None when awrun is not installed here.
@@ -432,8 +476,12 @@ class _ClaimOnlyMine:
                 return True
             return bool(skip(item)) if skip is not None else False
 
-        return self._queue.claim_next(worker_id=worker_id, kind=kind,  # type: ignore[attr-defined]
-                                      skip=only_mine, now=now)
+        return self._queue.claim_next(
+            worker_id=worker_id,
+            kind=kind,  # type: ignore[attr-defined]
+            skip=only_mine,
+            now=now,
+        )
 
     def __getattr__(self, name: str):
         return getattr(self._queue, name)
@@ -497,21 +545,21 @@ def run_awrun(job: dict, wake: dict) -> Outcome:
 
         finished = dispatch_once(_ClaimOnlyMine(queue, handoff), worker_id=worker)
     except ImportError:
-        return Outcome("queued", f"awrun_{kind}_queued; drain_unavailable",
-                       handoff_id=handoff)
+        return Outcome("queued", f"awrun_{kind}_queued; drain_unavailable", handoff_id=handoff)
     except Exception as exc:  # noqa: BLE001 - a dispatcher that raised still closes the wake
-        return Outcome("error", f"awrun_drain_failed:{type(exc).__name__}:{exc}",
-                       handoff_id=handoff)
+        return Outcome(
+            "error", f"awrun_drain_failed:{type(exc).__name__}:{exc}", handoff_id=handoff
+        )
     if finished is None:
         # Somebody else got there first, or the queue is holding it back. The
         # item is still the wake's own handoff, so the wake is `queued`.
-        return Outcome("queued", f"awrun_{kind}_queued; drain_did_not_claim_it",
-                       handoff_id=handoff)
+        return Outcome("queued", f"awrun_{kind}_queued; drain_did_not_claim_it", handoff_id=handoff)
     if getattr(finished, "id", None) != handoff:
         # Belt and braces for the narrowing above: a stranger's result is
         # never this wake's verdict, whatever came back.
-        return Outcome("queued", f"awrun_{kind}_queued; drain_claimed_another_item",
-                       handoff_id=handoff)
+        return Outcome(
+            "queued", f"awrun_{kind}_queued; drain_claimed_another_item", handoff_id=handoff
+        )
     status = getattr(finished, "status", "") or "unknown"
     result = getattr(finished, "result", None) or {}
     code = result.get("code") if isinstance(result, dict) else None
@@ -522,13 +570,17 @@ def run_awrun(job: dict, wake: dict) -> Outcome:
         # paging an operator for it would teach them to ignore the pager.
         return Outcome("queued", f"awrun_{kind}_requeued", handoff_id=handoff)
     state = "success" if status == "done" else "failure"
-    return Outcome(state, f"awrun_drained:{status}",
-                   exit_code=code if isinstance(code, int) else None,
-                   stdout_tail=ledger.tail(str(message).encode("utf-8")) if message else "",
-                   handoff_id=handoff)
+    return Outcome(
+        state,
+        f"awrun_drained:{status}",
+        exit_code=code if isinstance(code, int) else None,
+        stdout_tail=ledger.tail(str(message).encode("utf-8")) if message else "",
+        handoff_id=handoff,
+    )
 
 
 # -------------------------------------------------------------------- agent
+
 
 def _public_run_agent():
     """awrun's public inline agent entry point, or None.
@@ -563,34 +615,47 @@ def run_agent(job: dict, wake: dict) -> Outcome:
         try:
             from awrun.store import RunItem  # noqa: PLC0415 - optional by contract
 
-            item = RunItem(id=str(wake.get("wake_id") or "w-inline"), kind="agent",
-                           spec={"agent": agent, "task": task})
+            item = RunItem(
+                id=str(wake.get("wake_id") or "w-inline"),
+                kind="agent",
+                spec={"agent": agent, "task": task},
+            )
             result = inline(item)
         except Exception as exc:  # noqa: BLE001 - an inline runner that raised is a reason
             return Outcome("error", f"agent_inline_failed:{type(exc).__name__}:{exc}")
-        if not (isinstance(result, tuple) and len(result) == 2
-                and isinstance(result[0], int)):
+        if not (isinstance(result, tuple) and len(result) == 2 and isinstance(result[0], int)):
             return Outcome("error", f"agent_inline_returned_{type(result).__name__}")
         code, message = result
         state = "success" if code == 0 else "failure"
-        return Outcome(state, f"agent_inline:exit_{code}", exit_code=code,
-                       stdout_tail=ledger.tail(str(message).encode("utf-8")))
+        return Outcome(
+            state,
+            f"agent_inline:exit_{code}",
+            exit_code=code,
+            stdout_tail=ledger.tail(str(message).encode("utf-8")),
+        )
     # Resolved here, not left to the OS: a bare name on Windows is searched
     # with `.exe` only, so a console script installed as a `.cmd` shim exists,
     # answers `--version`, and cannot be spawned.
     adk = which("adk")
     if adk is None:
         return Outcome("error", "no_agent_executor:adk")
-    outcome = _run_process(job, wake, [adk, "chat", agent, task], shell=False,
-                           missing_reason="no_agent_executor")
+    outcome = _run_process(
+        job, wake, [adk, "chat", agent, task], shell=False, missing_reason="no_agent_executor"
+    )
     if outcome.state == "error" and outcome.reason.startswith("no_agent_executor"):
         return outcome
-    return Outcome(outcome.state, f"fallback_adk_chat:{outcome.reason}",
-                   exit_code=outcome.exit_code, stdout_tail=outcome.stdout_tail,
-                   stderr_tail=outcome.stderr_tail, child_pid=outcome.child_pid)
+    return Outcome(
+        outcome.state,
+        f"fallback_adk_chat:{outcome.reason}",
+        exit_code=outcome.exit_code,
+        stdout_tail=outcome.stdout_tail,
+        stderr_tail=outcome.stderr_tail,
+        child_pid=outcome.child_pid,
+    )
 
 
 # ------------------------------------------------------------------ session
+
 
 def session_base_url() -> str:
     return (os.environ.get(SESSION_URL_ENV) or "").strip() or DEFAULT_SESSION_URL
@@ -609,8 +674,9 @@ def _session_token(job: dict) -> Tuple[Optional[str], Optional[Outcome]]:
     return token, None
 
 
-def _session_call(url: str, token: str, *, method: str, payload: Optional[dict],
-                  timeout: float) -> Tuple[int, dict]:
+def _session_call(
+    url: str, token: str, *, method: str, payload: Optional[dict], timeout: float
+) -> Tuple[int, dict]:
     data = json.dumps(payload).encode("utf-8") if payload is not None else None
     headers = {"Authorization": f"Bearer {token}", "User-Agent": "awrise"}
     if data is not None:
@@ -657,24 +723,37 @@ def run_session(job: dict, wake: dict) -> Outcome:
     deadline = time.monotonic() + timeout
     session_id = None
     try:
-        _code, created = _session_call(f"{base}/sessions", token, method="POST",
-                                       payload=body, timeout=timeout)
+        _code, created = _session_call(
+            f"{base}/sessions", token, method="POST", payload=body, timeout=timeout
+        )
         session_id = created.get("id")
         if not session_id:
             return Outcome("error", "daemon_returned_no_session_id")
-        _session_call(f"{base}/sessions/{session_id}/input", token, method="POST",
-                      payload={"text": text}, timeout=timeout)
+        _session_call(
+            f"{base}/sessions/{session_id}/input",
+            token,
+            method="POST",
+            payload={"text": text},
+            timeout=timeout,
+        )
         since = 0
         chunks: List[str] = []
         while True:
             remaining = deadline - time.monotonic()
             if remaining <= 0:
-                return Outcome("timeout", f"killed after {timeout:g}s",
-                               stdout_tail=ledger.tail("".join(chunks).encode("utf-8")),
-                               handoff_id=session_id)
+                return Outcome(
+                    "timeout",
+                    f"killed after {timeout:g}s",
+                    stdout_tail=ledger.tail("".join(chunks).encode("utf-8")),
+                    handoff_id=session_id,
+                )
             _code, page = _session_call(
-                f"{base}/sessions/{session_id}/events?since={since}", token,
-                method="GET", payload=None, timeout=min(remaining, timeout))
+                f"{base}/sessions/{session_id}/events?since={since}",
+                token,
+                method="GET",
+                payload=None,
+                timeout=min(remaining, timeout),
+            )
             events = page.get("events") or []
             for event in events:
                 if not isinstance(event, dict):
@@ -685,17 +764,23 @@ def run_session(job: dict, wake: dict) -> Outcome:
                     chunks.append(str(event.get("text") or ""))
                 if kind == TURN_COMPLETE:
                     tail = ledger.tail("".join(chunks).encode("utf-8"))
-                    return Outcome("success", "turn_completed", stdout_tail=tail,
-                                   handoff_id=session_id)
+                    return Outcome(
+                        "success", "turn_completed", stdout_tail=tail, handoff_id=session_id
+                    )
                 if kind == "error":
-                    return Outcome("failure", f"session_error:{event.get('text') or 'unknown'}",
-                                   stderr_tail=ledger.tail(str(
-                                       event.get("text") or "").encode("utf-8")),
-                                   handoff_id=session_id)
+                    return Outcome(
+                        "failure",
+                        f"session_error:{event.get('text') or 'unknown'}",
+                        stderr_tail=ledger.tail(str(event.get("text") or "").encode("utf-8")),
+                        handoff_id=session_id,
+                    )
                 if kind == SESSION_EXITED:
-                    return Outcome("failure", "session_exited_before_turn_completed",
-                                   stdout_tail=ledger.tail("".join(chunks).encode("utf-8")),
-                                   handoff_id=session_id)
+                    return Outcome(
+                        "failure",
+                        "session_exited_before_turn_completed",
+                        stdout_tail=ledger.tail("".join(chunks).encode("utf-8")),
+                        handoff_id=session_id,
+                    )
             # EVERY poll pauses, not only a poll that came back empty. A live
             # turn streams deltas, so the page is almost never empty and a
             # sleep guarded by emptiness never runs: the loop then asks the
@@ -706,10 +791,8 @@ def run_session(job: dict, wake: dict) -> Outcome:
             time.sleep(min(SESSION_POLL_S, max(deadline - time.monotonic(), 0.0)))
     except urllib.error.HTTPError as exc:
         if exc.code in (401, 403):
-            return Outcome("error", f"http_{exc.code}", exit_code=exc.code,
-                           handoff_id=session_id)
-        return Outcome("failure", f"http_{exc.code}", exit_code=exc.code,
-                       handoff_id=session_id)
+            return Outcome("error", f"http_{exc.code}", exit_code=exc.code, handoff_id=session_id)
+        return Outcome("failure", f"http_{exc.code}", exit_code=exc.code, handoff_id=session_id)
     except urllib.error.URLError as exc:
         if isinstance(exc.reason, socket.gaierror):
             return Outcome("skipped_unresolvable", f"dns:{host}")
@@ -724,13 +807,19 @@ def run_session(job: dict, wake: dict) -> Outcome:
     except (socket.timeout, TimeoutError):
         return Outcome("timeout", f"killed after {timeout:g}s", handoff_id=session_id)
     except (OSError, ValueError) as exc:
-        return Outcome("error", f"daemon_unreachable:{type(exc).__name__}:{exc}",
-                       handoff_id=session_id)
+        return Outcome(
+            "error", f"daemon_unreachable:{type(exc).__name__}:{exc}", handoff_id=session_id
+        )
     finally:
         if session_id:
             with contextlib.suppress(Exception):
-                _session_call(f"{base}/sessions/{session_id}", token, method="DELETE",
-                              payload=None, timeout=min(30.0, timeout))
+                _session_call(
+                    f"{base}/sessions/{session_id}",
+                    token,
+                    method="DELETE",
+                    payload=None,
+                    timeout=min(30.0, timeout),
+                )
 
 
 # ---------------------------------------------------------------- unit plane
@@ -805,8 +894,10 @@ def unit_name_problem(unit: object) -> Optional[str]:
         return "must be a unit name like my-model.service"
     name = unit.strip()
     if not UNIT_RE.fullmatch(name):
-        return (f"{name!r} is not a plain .service name (lowercase letters, digits, "
-                "'.', '_' and '-', ending in .service)")
+        return (
+            f"{name!r} is not a plain .service name (lowercase letters, digits, "
+            "'.', '_' and '-', ending in .service)"
+        )
     return None
 
 
@@ -825,8 +916,14 @@ def _refused(unit: str, reason: str, state: str = "failed") -> dict:
     return {"ok": False, "state": state, "unit": unit, "reason": reason}
 
 
-def ask_unit_agent(action: str, unit: str, wait_s: float, plane: Optional[Path] = None,
-                   extra: Optional[dict] = None, poll_s: float = PLANE_POLL_S) -> dict:
+def ask_unit_agent(
+    action: str,
+    unit: str,
+    wait_s: float,
+    plane: Optional[Path] = None,
+    extra: Optional[dict] = None,
+    poll_s: float = PLANE_POLL_S,
+) -> dict:
     """Ask the host agent to ``action`` ``unit`` and wait for ITS verdict.
 
     Fail-closed in both directions: nothing is written when no agent is alive,
@@ -838,13 +935,22 @@ def ask_unit_agent(action: str, unit: str, wait_s: float, plane: Optional[Path] 
     if directory is None:
         return _refused(unit, f"no unit plane on this machine: set {UNIT_PLANE_DIR_ENV}")
     if not agent_alive(directory):
-        return _refused(unit, f"no unit agent heartbeat in {directory} within "
-                              f"{AGENT_TTL_S:.0f}s -- nothing would claim the request")
+        return _refused(
+            unit,
+            f"no unit agent heartbeat in {directory} within "
+            f"{AGENT_TTL_S:.0f}s -- nothing would claim the request",
+        )
     rid = uuid.uuid4().hex[:16]
     request = directory / "requests" / f"{rid}.json"
     result = directory / "results" / f"{rid}.json"
-    payload = {"id": rid, "action": action, "unit": unit, "token": "",
-               "ttl_s": PLANE_TTL_S, "created_at": time.time()}
+    payload = {
+        "id": rid,
+        "action": action,
+        "unit": unit,
+        "token": "",
+        "ttl_s": PLANE_TTL_S,
+        "created_at": time.time(),
+    }
     payload.update(extra or {})
     try:
         request.parent.mkdir(parents=True, exist_ok=True)
@@ -872,8 +978,11 @@ def ask_unit_agent(action: str, unit: str, wait_s: float, plane: Optional[Path] 
     except FileNotFoundError:
         return _refused(unit, "the agent took the request and never answered")
     except OSError as exc:
-        return _refused(unit, f"no answer within {wait_s:.0f}s and the request could not be "
-                              f"withdrawn: {type(exc).__name__}: {exc}")
+        return _refused(
+            unit,
+            f"no answer within {wait_s:.0f}s and the request could not be "
+            f"withdrawn: {type(exc).__name__}: {exc}",
+        )
     return _refused(unit, f"no agent answered within {wait_s:.0f}s")
 
 
@@ -899,8 +1008,9 @@ def wake_unit(unit: str, plane: Optional[Path] = None) -> Tuple[dict, float]:
     and this side's wall clock otherwise, so the ledger always has a number."""
     budget = wake_budget_s()
     started = time.monotonic()
-    answer = ask_unit_agent("wake", unit, wait_s=budget + WAKE_GRACE_S, plane=plane,
-                            extra={"wait_s": budget})
+    answer = ask_unit_agent(
+        "wake", unit, wait_s=budget + WAKE_GRACE_S, plane=plane, extra={"wait_s": budget}
+    )
     waited = round(time.monotonic() - started, 3)
     try:
         wake_s = round(float(answer["wake_s"]), 3)
@@ -909,8 +1019,9 @@ def wake_unit(unit: str, plane: Optional[Path] = None) -> Tuple[dict, float]:
     return answer, wake_s
 
 
-def park_unit(job: dict, unit: str, outcome: Optional[Outcome] = None,
-              plane: Optional[Path] = None) -> Optional[str]:
+def park_unit(
+    job: dict, unit: str, outcome: Optional[Outcome] = None, plane: Optional[Path] = None
+) -> Optional[str]:
     """Put ``unit`` back to sleep after the job ran. Returns what happened, or
     None when the job did not ask. A park NEVER changes the job's own state: the
     command ran and its exit code is the truth; whether the unit went back to
@@ -945,8 +1056,7 @@ def run_woken(job: dict, wake: dict, inner: Callable[[dict, dict], Outcome]) -> 
     plane = wake.get("unit_plane") if isinstance(wake, dict) else None
     problem = unit_name_problem(unit)
     if problem:
-        return Outcome("error", f"wake_refused:{problem}", wake_unit=unit,
-                       wake_state="refused")
+        return Outcome("error", f"wake_refused:{problem}", wake_unit=unit, wake_state="refused")
     required = job.get("wake_required")
     required = True if required is None else bool(required)
     answer, wake_s = wake_unit(unit, plane)
@@ -955,16 +1065,29 @@ def run_woken(job: dict, wake: dict, inner: Callable[[dict, dict], Outcome]) -> 
         if required:
             # Nothing ran: no child was spawned, and the reason names the unit
             # and the agent's own words for why it is not up.
-            return Outcome("error", f"wake_failed:{unit}:{state}:{reason}",
-                           wake_unit=unit, wake_s=wake_s, wake_state=state)
+            return Outcome(
+                "error",
+                f"wake_failed:{unit}:{state}:{reason}",
+                wake_unit=unit,
+                wake_s=wake_s,
+                wake_state=state,
+            )
         outcome = inner(job, wake)
-        return replace(outcome, wake_unit=unit, wake_s=wake_s,
-                       wake_state=f"{state}:not_required:{reason}",
-                       park_state="skipped:the unit was never woken"
-                       if job.get("park_after") else None)
+        return replace(
+            outcome,
+            wake_unit=unit,
+            wake_s=wake_s,
+            wake_state=f"{state}:not_required:{reason}",
+            park_state="skipped:the unit was never woken" if job.get("park_after") else None,
+        )
     outcome = inner(job, wake)
-    return replace(outcome, wake_unit=unit, wake_s=wake_s, wake_state=state,
-                   park_state=park_unit(job, unit, outcome, plane))
+    return replace(
+        outcome,
+        wake_unit=unit,
+        wake_s=wake_s,
+        wake_state=state,
+        park_state=park_unit(job, unit, outcome, plane),
+    )
 
 
 EXECUTORS = {

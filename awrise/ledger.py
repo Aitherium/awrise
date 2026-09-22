@@ -61,6 +61,7 @@ STATES = frozenset(
         "skipped_missed",
         "skipped_empty",
         "skipped_unresolvable",
+        "skipped_predicted",
         "orphaned",
         "would_fire",
     }

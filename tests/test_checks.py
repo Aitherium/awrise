@@ -451,3 +451,106 @@ def test_wl005_does_not_judge_a_ceiling(home):
     _job(home, last_started=now, timeout_s=3300)
     _row(home, "finished", now, job="j", state="success", duration_s=0.08)
     assert _find(home, "WL005").code == checks.OK
+
+
+# ------------------------------------------------------------------- WL006
+
+
+def test_wl006_is_unjudged_while_a_detached_wake_has_no_outcome(home):
+    """Measured 2026-09-20: status said OK while awmine had exited 1 three
+    times and fleet-gates sat at consecutive_failures=3."""
+    now = clock.now_utc()
+    _job(home, last_started=now, detach=True)
+    jobs = store.load(home)
+    jobs["j"]["last_state"] = "detached"
+    jobs["j"]["consecutive_failures"] = 3
+    store.save(jobs, home)
+    finding = _find(home, "WL006")
+    assert finding.code == checks.UNJUDGED
+    assert "consecutive_failures=3" in " ".join(finding.details)
+
+
+def test_wl006_is_quiet_once_the_outcome_is_known(home):
+    now = clock.now_utc()
+    _job(home, last_started=now, detach=True)
+    assert _find(home, "WL006").code == checks.OK
+
+
+def test_wl006_ignores_an_attached_job(home):
+    """An attached job's exit code IS in the row -- WL006 has nothing to say."""
+    now = clock.now_utc()
+    _job(home, last_started=now)
+    jobs = store.load(home)
+    jobs["j"]["last_state"] = "detached"
+    store.save(jobs, home)
+    assert _find(home, "WL006").code == checks.OK
+
+
+def test_an_unjudged_detached_wake_is_never_a_pass(home):
+    now = clock.now_utc()
+    _job(home, last_started=now, detach=True)
+    jobs = store.load(home)
+    jobs["j"]["last_state"] = "detached"
+    store.save(jobs, home)
+    assert checks.verdict(checks.run(base=home)) != checks.OK
+
+
+# ----------------------------------------------- WL006 reads the receipt
+
+
+def _detached_with_receipt(home, tmp_path, payload, *, age_s: float = 0.0):
+    """A detached job whose child left `payload` in a receipt `age_s` old."""
+    import os
+    now = clock.now_utc()
+    rec = tmp_path / "receipt.json"
+    rec.write_text(json.dumps(payload), encoding="utf-8")
+    if age_s:
+        stamp = rec.stat().st_mtime - age_s
+        os.utime(rec, (stamp, stamp))
+    _job(home, last_started=now, detach=True, receipt=str(rec))
+    jobs = store.load(home)
+    jobs["j"]["last_state"] = "detached"
+    store.save(jobs, home)
+    return rec
+
+
+def test_wl006_closes_a_detached_wake_from_its_own_receipt(home, tmp_path):
+    """The whole point of declaring a receipt: stop abstaining."""
+    _detached_with_receipt(home, tmp_path, {"exit_code": 0})
+    finding = _find(home, "WL006")
+    assert finding.code == checks.OK
+    assert "exit_code=0" in " ".join(finding.details)
+
+
+def test_wl006_is_a_violation_when_the_receipt_reports_failure(home, tmp_path):
+    """A job that declared a receipt gets to say it FAILED -- that outranks
+    the abstention, or declaring one would only ever soften the verdict."""
+    _detached_with_receipt(home, tmp_path, {"exit_code": 1})
+    finding = _find(home, "WL006")
+    assert finding.code == checks.VIOLATION
+    assert "exit_code=1" in " ".join(finding.details)
+
+
+def test_wl006_refuses_a_receipt_older_than_the_wake_it_would_judge(home, tmp_path):
+    """The likeliest way this check could lie: last run's verdict wearing this
+    run's name. An hour-old receipt for a wake that started now is not evidence."""
+    _detached_with_receipt(home, tmp_path, {"exit_code": 0}, age_s=3600)
+    finding = _find(home, "WL006")
+    assert finding.code == checks.UNJUDGED
+    assert "stale" in " ".join(finding.details)
+
+
+def test_wl006_refuses_a_receipt_with_no_exit_code(home, tmp_path):
+    """awmine's own receipt was exactly this shape: full of counts, silent on
+    whether the run passed."""
+    _detached_with_receipt(home, tmp_path, {"residual_hits": 41})
+    assert _find(home, "WL006").code == checks.UNJUDGED
+
+
+def test_wl006_says_how_to_declare_a_receipt_when_none_is_set(home):
+    now = clock.now_utc()
+    _job(home, last_started=now, detach=True)
+    jobs = store.load(home)
+    jobs["j"]["last_state"] = "detached"
+    store.save(jobs, home)
+    assert "receipt=" in " ".join(_find(home, "WL006").details)

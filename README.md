@@ -107,6 +107,8 @@ Every command exits **0 clean, 1 a measured no, 2 could not judge** -- never 0 o
 | `park_after` | `false` | with `wake`: ask for the unit to be put back to sleep afterwards; refused without `wake`, refused with `detach`, and skipped whenever the wake closed with the work still outstanding (a queued run-queue item) |
 | `wake_required` | `true` | a failed wake means the command does NOT run; `false` runs it anyway and still records the failure |
 | `report` | off | `--report-relay '#channel'` and `--card-after N`: a relay line, and one decision card after a failure streak |
+| `report.memory` | `false` (`set NAME report.memory=true`) | recall this job's own past wakes into its env before it runs, and remember the one that just finished -- see [Memory](#memory) |
+| `predict` | `off` (`set NAME predict=warn\|skip`) | consult this job's own history before it fires -- see [Predict](#predict) |
 
 Overlap is not one of them: it is fixed behaviour. A job whose previous run still holds its lock is recorded
 `skipped_overlap` and is never started a second time.
@@ -175,6 +177,66 @@ awrise history --since 7d --json
 
 Each pass also writes a `tick` and a `tick_end` row carrying the gap since the previous one,
 so a clock that stopped is a visible absence rather than a silence.
+
+## Memory
+
+`report.memory: true` gives a job a small, ancestor-safe memory of its own past wakes, backed
+by [awm](https://github.com/Aitherium/awm) -- off by default, and inert until set:
+
+```bash
+awrise set nightly-render report.memory=true
+```
+
+Before the job runs, awrise recalls its own last 20 finished wakes and exports them as JSON in
+`AWRISE_MEMORY_JSON` (an empty array `[]` on the first run, never absent). After it finishes, the
+outcome (`state`, `reason`, `duration_s`, `exit_code`, `ts`) is remembered under a key unique to
+that wake, so the next wake's recall includes it. `awrise explain --name NAME` shows the same
+payload live, read-only, for a job with `report.memory: true`.
+
+The memory is scoped `awrise:<host>:<job>` -- one job, one host -- and the store lives at
+`$AWRISE_HOME/awm/memory.db`, isolated per `AWRISE_HOME`. `AWRISE_MEMORY_JSON` is **inert data
+only**: awrise never evaluates, sources or shell-interpolates it, and a `shell_command` job that
+does (`eval $AWRISE_MEMORY_JSON`) is that job's own choice and risk, not something this sink does
+or endorses.
+
+Both the recall and the remember are bounded by a tight timeout and fail OPEN: a missing or
+broken `awm`, or a store that cannot answer in time, never blocks or fails the wake -- it costs
+one `report_error` ledger row and nothing else.
+
+## Predict
+
+`predict: warn` or `predict: skip` gives a job a gate over its OWN history, backed by
+[awpredict](https://github.com/Aitherium/awpredict) -- off by default, and inert until set:
+
+```bash
+awrise set nightly-render predict=warn    # log the verdict, always fire
+awrise set nightly-render predict=skip    # refuse to fire on a bad-outcome verdict
+awrise predict --name nightly-render      # the live verdict, read-only, right now
+```
+
+Before the job runs, awrise counts its own judged finished wakes (a `success`, or one of the
+`failure` / `timeout` / `error` / `orphaned` bad states -- a policy skip or a cancellation says
+nothing about the command's own behaviour, so it is not counted). Below five of them the verdict
+is `UNJUDGED, fewer than 5 historical rows` and the job fires exactly as if `predict` were `off`
+-- there is no awpredict sentinel for "not enough data yet"; awrise decides that itself, before
+ever calling the engine. At or above five, awrise asks a cached `awpredict` `MLPWorldModel` what
+its own history says the next wake's outcome looks like, and reads `good` or `bad` off the
+predicted reward.
+
+`predict: warn` only LOGS the verdict -- on the job's `started` ledger row, as `prediction:
+{verdict, reason, confidence, mode, rows}` -- and always fires anyway; a bad-outcome verdict is
+information, not a veto. `predict: skip` is the only policy that can refuse to fire: on a
+bad-outcome verdict it writes a `skipped_predicted` row instead of running the job -- UNLESS the
+job's own PREVIOUS row was already `skipped_predicted`, in which case a real attempt is forced
+regardless of what the new prediction says, so a job can never be skipped twice running on a
+prediction alone. `awrise --dry-run` agrees with the real pass: a job that would be
+`skipped_predicted` next pass shows as `hold`, never `would_fire`.
+
+The call is bounded by a tight timeout and fails OPEN: a missing or broken `awpredict`, a cold
+engine with nothing to say yet, or a call that does not return in time all degrade to
+`UNJUDGED` -- the job fires exactly as if `predict` were `off`. A genuine failure (a timeout or
+an exception, never "too few rows") also costs one `report_error` ledger row, same as the
+memory sink above -- never a failed wake.
 
 ## Configuration
 
@@ -277,6 +339,16 @@ list below is the output of `awrise --self-test --list` and must stay equal to i
 - `card_raised_after_n_failures`
 - `report_block_validated_at_add`
 - `cwd_missing_is_error`
+- `memory_off_by_default_touches_neither_env_nor_store`
+- `memory_on_exports_recalled_wakes_and_excludes_ancestor_scope`
+- `memory_failure_is_a_report_error_row_not_a_failed_wake`
+- `explain_shows_the_same_recalled_memory_payload`
+- `predict_off_writes_no_prediction_and_builds_no_engine`
+- `predict_under_threshold_is_unjudged_and_still_fires`
+- `predict_engine_is_built_exactly_once_across_due_checks`
+- `predict_timeout_fails_open_and_writes_a_report_error_row`
+- `predict_skip_holds_on_a_bad_verdict_and_never_skips_twice_running`
+- `dry_run_predict_skip_agrees_with_the_real_pass`
 
 ## Design
 
@@ -287,8 +359,8 @@ list below is the output of `awrise --self-test --list` and must stay equal to i
 - **One pass, then exit.** `run-due` reconciles, fires what is due, and returns an exit code
   a cron wrapper can act on.
 - **Nothing optional is imported until it is used.** The `http`, `awrun`, `agent` and
-  `session` executors and the relay and card sinks are guarded, off by default, and carry no
-  default URL.
+  `session` executors, the relay and card sinks, and the `awm`-backed memory sink are guarded,
+  off by default, and carry no default URL.
 - **Atomic state.** `jobs.json` is written through a temporary file, fsynced and replaced,
   after every outcome; the previous copy is kept as `jobs.json.bak`. A corrupt store exits 2
   and is restorable -- it is never silently replaced by an empty one.
