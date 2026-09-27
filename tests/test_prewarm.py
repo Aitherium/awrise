@@ -1,6 +1,6 @@
 """`prewarm`: one job per unit, and never two units sharing one job name.
 
-Review finding (2026-09-19): `_slug` strips the `aither-`/`aitheros-` prefix as
+Review finding (2026-09-19): `_slug` strips the fleet-name prefixes as
 well as slugging, so `foo.service` and `aither-foo.service` collapse to the one
 job name `prewarm-foo`. `cmd_prewarm --apply` then did `jobs[proposal["job"]] =
 job` for each proposal in turn -- silently overwriting the earlier record while

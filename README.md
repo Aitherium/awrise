@@ -349,6 +349,13 @@ list below is the output of `awrise --self-test --list` and must stay equal to i
 - `predict_timeout_fails_open_and_writes_a_report_error_row`
 - `predict_skip_holds_on_a_bad_verdict_and_never_skips_twice_running`
 - `dry_run_predict_skip_agrees_with_the_real_pass`
+- `import_routine_translates_a_shaped_yaml_and_writes_nothing_without_apply`
+- `import_routine_apply_with_i_am_the_runner_writes_the_job_exactly_once`
+- `import_routine_apply_without_the_runner_flag_is_refused`
+- `import_routine_refuses_cron_and_non_shell_actions_by_name`
+- `import_routine_refuses_a_block_pattern_and_a_metacharacter_under_apply`
+- `import_routine_action_args_is_refused_by_name_and_never_concatenated`
+- `history_import_fleet_is_read_only_and_flags_unparseable_records`
 
 ## Design
 
