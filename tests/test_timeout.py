@@ -91,6 +91,21 @@ def _pid_alive(pid: int) -> bool:
         return False
     except PermissionError:
         return True
+    # A killed process stays a ZOMBIE until its parent reaps it, and signal 0 still
+    # finds a zombie -- so a child this process spawned and killed read as alive
+    # forever on Linux. Reap it if it is ours; otherwise read its state.
+    try:
+        done, _status = os.waitpid(pid, os.WNOHANG)
+        if done == pid:
+            return False
+    except ChildProcessError:
+        pass
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            if fh.read().rsplit(")", 1)[1].split()[0] == "Z":
+                return False
+    except (OSError, IndexError):
+        pass
     return True
 
 

@@ -22,7 +22,7 @@ routines = ["pyyaml"]
 # installed and reports "memory unavailable" when it is not.
 memory = ["awm>=0.3"]
 # What the test suite and self-test exercise -- the publish lane installs this.
-dev = ["pytest", "pytest-timeout", "pyyaml", "awm>=0.3"]
+dev = ["pytest", "pytest-timeout", "pyyaml", "awm>=0.3", "awpredict>=0.1"]
 
 [project.scripts]
 awrise = "awrise.cli:main"
