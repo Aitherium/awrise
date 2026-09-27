@@ -257,7 +257,11 @@ def context(
     if kind not in KINDS:
         raise HostClockError(f"unknown host clock {kind!r}; known: {', '.join(KINDS)}", 2)
     home_path = base if base is not None else store.home()
-    sep = "\\" if kind == "schtasks" else "/"
+    # The separator follows the HOST, not the kind: these are live paths on
+    # this disk. A backslash joined onto a POSIX home names one file with
+    # backslashes in it, and any shell that echoes it reads `\b`/`\r` as
+    # escapes. Only a Windows host gets the Windows separator.
+    sep = "\\" if (kind == "schtasks" and os.name == "nt") else "/"
     home = str(home_path)
     bin_dir = _join([home, "bin"], sep)
     if kind == "schtasks":

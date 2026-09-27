@@ -680,7 +680,9 @@ def _stub_scheduler(tmp_path: Path, log: Path, enabled: bool = True, owner: str 
     flag = "true" if enabled else "false"
     body = (
         "#!/bin/sh\n"
-        f'echo "$@" >> "{log}"\n'
+        # printf, never echo: dash's echo expands backslash escapes, so a
+        # recorded path would be rewritten before the assertions read it.
+        f'printf \'%s\\n\' "$*" >> "{log}"\n'
         'if [ "$1" = "/query" ]; then\n'
         f"  echo '<Task><Settings><Enabled>{flag}</Enabled></Settings>'\n"
         f"  echo '<Actions><Exec><Command>{action}</Command></Exec></Actions></Task>'\n"
