@@ -18,6 +18,11 @@ authors = [
 # by design. Guarded `import yaml` inside that one function is what makes the
 # core package installable with zero third-party dependencies regardless.
 routines = ["pyyaml"]
+# The wake's memory (recall before it fires, remember after) uses awm when it is
+# installed and reports "memory unavailable" when it is not.
+memory = ["awm>=0.3"]
+# What the test suite and self-test exercise -- the publish lane installs this.
+dev = ["pytest", "pytest-timeout", "pyyaml", "awm>=0.3"]
 
 [project.scripts]
 awrise = "awrise.cli:main"
