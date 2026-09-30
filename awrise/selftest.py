@@ -2087,7 +2087,12 @@ def a_sink_that_cannot_run_is_a_row_not_a_lost_pass() -> None:
         with _only_path(empty):
             assert _run_due() == 1, "the job's own verdict survived the sinks"
         reasons = [r.get("reason") for r in ledger.read(base) if r.get("event") == "report_error"]
-        assert sorted(reasons) == ["awask_not_installed", "awrelay_not_installed"], reasons
+        # the card could not be raised, so it fell back to a relay alert, which could
+        # not run either -- one row says both
+        assert sorted(reasons) == [
+            "awask_not_installed;relay_fallback:awrelay_not_installed",
+            "awrelay_not_installed",
+        ], reasons
         job = store.load(base)["s"]
         assert job["last_state"] == "failure" and job["consecutive_failures"] == 1
         assert str(job["report"]["card_id"]).startswith("unavailable:")
@@ -2273,6 +2278,61 @@ def card_raised_after_n_failures() -> None:
         assert "--default" in asks[0] and asks[0][asks[0].index("--default") + 1] == "keep"
         options = [asks[0][i + 1] for i, part in enumerate(asks[0]) if part == "--option"]
         assert [o.split(":", 1)[0] for o in options] == ["disable", "keep"], options
+
+
+def _detached_job(base: Path, receipt_code, fails: int = 3) -> Path:
+    """One enabled detached job whose last wake is `detached`, 10 minutes ago, with an
+    optional receipt written AFTER that wake (None = no receipt file)."""
+    assert _add("d", every="4h", run="echo hi") == 0
+    jobs = store.load(base)
+    started = clock.now_utc() - timedelta(minutes=10)
+    receipt = base / "receipt.json"
+    jobs["d"].update(
+        detach=True,
+        last_state="detached",
+        last_started_at=clock.iso(started),
+        consecutive_failures=fails,
+        receipt=str(receipt),
+    )
+    store.save(jobs, base)
+    if receipt_code is not None:
+        receipt.write_text(json.dumps({"exit_code": receipt_code}), encoding="utf-8")
+    return receipt
+
+
+def status_judges_a_detached_wake_by_its_receipt() -> None:
+    status = lambda: cli.cmd_status(argparse.Namespace())  # noqa: E731
+    with _home() as base:
+        _detached_job(base, 1)
+        assert status() == 1, "a detached wake whose receipt says exit_code=1 printed OK"
+    with _home() as base:
+        _detached_job(base, None)
+        assert status() == 2, "a detached wake with no receipt was called OK"
+    # negative twin: the receipt says 0 -> OK even with a stale counter of 3
+    with _home() as base:
+        _detached_job(base, 0)
+        assert status() == 0, "a detached wake whose receipt says exit_code=0 was not OK"
+
+
+def reconcile_stamps_a_detached_wake_from_its_receipt() -> None:
+    with _home() as base:
+        _detached_job(base, 0, fails=3)
+        jobs = cli.reconcile(base, store.load(base), "p-selftest", "selftest")[0]
+        job = store.load(base)["d"]
+        assert job["last_state"] == "success" and job["consecutive_failures"] == 0, job
+        assert jobs["d"]["consecutive_failures"] == 0
+        rows = [r for r in ledger.read(base) if r.get("event") == "reconciled"]
+        assert any(r.get("reason") == "judged_detached_by_receipt_exit_0" for r in rows), rows
+        # read once per wake: a second reconcile changes nothing
+        cli.reconcile(base, store.load(base), "p-selftest-2", "selftest")
+        again = [r for r in ledger.read(base) if r.get("event") == "reconciled"]
+        assert len(again) == len(rows), again
+    # negative twin: a failing receipt grows the streak and marks the wake failed
+    with _home() as base:
+        _detached_job(base, 2, fails=3)
+        cli.reconcile(base, store.load(base), "p-selftest", "selftest")
+        job = store.load(base)["d"]
+        assert job["last_state"] == "failure" and job["consecutive_failures"] == 4, job
 
 
 def report_block_validated_at_add() -> None:
@@ -2961,6 +3021,8 @@ CASES: List[Tuple[str, Callable[[], None]]] = [
         http_gaierror_is_skipped_unresolvable,
         http_5xx_is_failure_with_body_tail,
         card_raised_after_n_failures,
+        status_judges_a_detached_wake_by_its_receipt,
+        reconcile_stamps_a_detached_wake_from_its_receipt,
         report_block_validated_at_add,
         cwd_missing_is_error,
         memory_off_by_default_touches_neither_env_nor_store,

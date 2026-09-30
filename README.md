@@ -337,6 +337,8 @@ list below is the output of `awrise --self-test --list` and must stay equal to i
 - `http_gaierror_is_skipped_unresolvable`
 - `http_5xx_is_failure_with_body_tail`
 - `card_raised_after_n_failures`
+- `status_judges_a_detached_wake_by_its_receipt`
+- `reconcile_stamps_a_detached_wake_from_its_receipt`
 - `report_block_validated_at_add`
 - `cwd_missing_is_error`
 - `memory_off_by_default_touches_neither_env_nor_store`

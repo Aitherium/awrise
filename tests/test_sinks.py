@@ -311,9 +311,24 @@ def test_an_absent_awask_writes_exactly_one_report_error_per_streak(home, nobin,
     _later(monkeypatch)
     assert _run_due() == 1
     rows = _rows(home, "report_error")
-    assert len(rows) == 1 and rows[0]["reason"] == "awask_not_installed", rows
+    # ONE row per streak, and it says the relay-alert fallback was tried too
+    assert len(rows) == 1 and rows[0]["reason"].startswith("awask_not_installed"), rows
+    assert "relay_fallback:" in rows[0]["reason"], rows
     assert _job(home)["report"]["card_id"].startswith("unavailable:")
     assert _rows(home, "card_raised") == []
+
+
+def test_a_card_that_cannot_be_raised_falls_back_to_a_relay_alert(home, sinkbin, monkeypatch):
+    """2026-09-30: fleet-gates hit its card threshold, awask timed out, and nobody
+    was told. The streak goes out as an awrelay ALERT instead."""
+    monkeypatch.setattr(cli, "_raise_card", lambda *a, **k: (None, "awask_timed_out_after_30s"))
+    monkeypatch.setenv(cli.RELAY_NICK_ENV, "tester")
+    assert _failing(card_after=1) == 0
+    assert _run_due() == 1
+    alerts = [c for c in _calls(sinkbin) if "--kind" in c and c[c.index("--kind") + 1] == "alert"]
+    assert len(alerts) == 1 and alerts[0][1] == cli.CARD_FALLBACK_CHANNEL, _calls(sinkbin)
+    rows = _rows(home, "report_error")
+    assert [r["reason"] for r in rows] == ["awask_timed_out_after_30s"], rows
 
 
 # ------------------------------------------------- the channel from the env

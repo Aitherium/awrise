@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import _command_guard as command_guard
-from . import clock, executors, hostclock, ledger, lock, store
+from . import checks, clock, executors, hostclock, ledger, lock, store
 from .clock import parse_interval  # noqa: F401  (0.1.0 import path, kept)
 from .executors import Outcome
 
@@ -592,6 +592,26 @@ def reconcile(
             },
         )
         touched.extend(recovered)
+    for name, code, where in _judge_detached_by_receipt(jobs):
+        # A detached wake has no finished row with an exit code (the pass closed at
+        # spawn), so its own receipt is the verdict. Stamping it here is what moves
+        # consecutive_failures: before this the counter only ever changed on attached
+        # wakes, and fleet-gates showed "3" from 09-19 for eleven days.
+        ledger.append(
+            base,
+            {
+                "pass_id": pass_id,
+                "invoker": invoker,
+                "job": name,
+                "event": "reconciled",
+                "reason": f"judged_detached_by_receipt_exit_{code}",
+                "receipt": where,
+            },
+        )
+        touched.append(name)
+        if code != 0:
+            wake = jobs[name].get("last_wake_id") or ""
+            notices.append((name, wake, Outcome("failure", f"receipt_exit_code_{code}")))
     if touched:
         jobs = store.reload_merge(jobs, touched, base)
         store.save(jobs, base)
@@ -601,6 +621,35 @@ def reconcile(
     for name, wake_id, outcome in notices:
         jobs = _notify(base, jobs, name, wake_id, pass_id, invoker, outcome)
     return jobs, closed, live
+
+
+def _judge_detached_by_receipt(jobs: dict) -> List[Tuple[str, int, str]]:
+    """Close each enabled detached job's last wake from its OWN receipt.
+
+    Only a job whose last wake is still `detached` and whose receipt is NEWER than
+    that wake (checks._receipt_verdict) is judged, so a receipt is read once per wake
+    and the previous run's receipt can never pass for this one. Mutates ``jobs``:
+    last_state becomes success/failure and consecutive_failures resets or grows.
+    Returns (job, exit_code, receipt path) per judged job.
+    """
+    judged: List[Tuple[str, int, str]] = []
+    for name, job in jobs.items():
+        if not job.get("enabled", True) or not job.get("detach"):
+            continue
+        if job.get("last_state") != "detached":
+            continue
+        verdict = checks._receipt_verdict(job)
+        if verdict is None:
+            continue
+        code, where = verdict
+        job["last_state"] = "success" if code == 0 else "failure"
+        job["last_reason"] = f"receipt_exit_code_{code}"
+        if code == 0:
+            job["consecutive_failures"] = 0
+        else:
+            job["consecutive_failures"] = int(job.get("consecutive_failures") or 0) + 1
+        judged.append((name, code, where))
+    return judged
 
 
 def _recover_stamps(jobs: dict, rows: List[dict]) -> List[str]:
@@ -1392,7 +1441,7 @@ def _relay_line(name: str, outcome: Outcome) -> str:
     return f"[awrise] {name}: {outcome.state} ({detail})"
 
 
-def _send_relay(channel: str, name: str, outcome: Outcome) -> str:
+def _send_relay(channel: str, name: str, outcome: Outcome, kind: str = "finding") -> str:
     if executors.which("awrelay") is None:
         return "awrelay_not_installed"
     if not (os.environ.get(RELAY_NICK_ENV) or "").strip():
@@ -1401,9 +1450,14 @@ def _send_relay(channel: str, name: str, outcome: Outcome) -> str:
         # ever learns that a channel they configured is posting nothing.
         return f"awrelay_nick_missing:{RELAY_NICK_ENV}"
     _code, _out, problem = _sink_run(
-        ["awrelay", "send", channel, _relay_line(name, outcome), "--kind", "finding"]
+        ["awrelay", "send", channel, _relay_line(name, outcome), "--kind", kind]
     )
     return problem
+
+
+#: Where a card that could not be raised is re-sent as an alert when the job names no
+#: relay channel of its own.
+CARD_FALLBACK_CHANNEL = "#agents"
 
 
 def _raise_card(name: str, fails: int, outcome: Outcome) -> Tuple[Optional[str], str]:
@@ -1498,6 +1552,18 @@ def _notify(
     else:
         card_id, problem = _raise_card(name, fails, outcome)
         if problem:
+            # A card that could not be raised (measured 2026-09-30: fleet-gates at 3
+            # consecutive failures, `awask_timed_out_after_30s`) must not leave the
+            # streak untold: re-send it as a relay ALERT, once per streak like the card.
+            fallback = channel or CARD_FALLBACK_CHANNEL
+            relay_problem = store.relay_channel_problem(fallback) or _send_relay(
+                str(fallback),
+                name,
+                Outcome(outcome.state, f"{fails} consecutive failures, card unavailable"),
+                kind="alert",
+            )
+            if relay_problem:
+                problem = f"{problem};relay_fallback:{relay_problem}"
             _report_error_row(base, name, wake_id, pass_id, invoker, problem)
             # The sentinel is what makes "one per streak" true for a FAILED
             # raise too: without it a host with no awask writes the same row
@@ -2869,6 +2935,21 @@ def cmd_status(args) -> int:
             f"{int(job.get('consecutive_failures') or 0):<5} "
             f"{due:<14} {(job.get('last_reason') or '')[:40]}"
         )
+    # WL006, inline: `detached` says the child was SPAWNED, never that it succeeded.
+    # Measured 2026-09-30: this printed OK while fleet-gates had failed its last runs.
+    # The job's OWN receipt is the verdict; a finished child with no fresh receipt is
+    # UNJUDGED, never OK. A child that is still running is "in progress", not blind.
+    blind: List[str] = []
+    for name, job in sorted(jobs.items()):
+        if not job.get("enabled", True) or not job.get("detach"):
+            continue
+        if job.get("last_state") != "detached" or name in live_by_job:
+            continue
+        verdict = checks._receipt_verdict(job)
+        if verdict is None:
+            blind.append(name)
+        elif verdict[0] != 0:
+            bad.append(f"{name} (detached; receipt exit_code={verdict[0]})")
     stale = [w for w, row in opens.items() if not _wake_is_live(row)]
     if stale:
         print(f"{len(stale)} wake(s) started and never finished -- run `awrise reconcile`")
@@ -2885,6 +2966,12 @@ def cmd_status(args) -> int:
             f"UNJUDGED: {', '.join(pending)} never woke -- nothing has run for "
             f"{'it' if len(pending) == 1 else 'them'}, so nothing can be judged"
         )
+    if blind:
+        print(
+            f"UNJUDGED: {', '.join(blind)} detached with no fresh receipt -- the child's "
+            "exit code is unknown; declare one with `awrise set <job> receipt=<path>`"
+        )
+    if pending or blind:
         return 2
     print("OK: every job's last wake ended success or a policy skip")
     return 0
