@@ -1,110 +1,487 @@
 <!doctype html>
-<html lang="en">
 <!-- generated-by: gen_brick_page -->
+<html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
 <title>awrise — Wake an agent on a schedule, let it do one thing, and put it back to sleep.</title>
 <meta name="description" content="Wake an agent on a schedule, let it do one thing, and put it back to sleep.">
+<meta property="og:title" content="awrise — Wake an agent on a schedule, let it do one thing, and put it back to sleep.">
+<meta property="og:description" content="Wake an agent on a schedule, let it do one thing, and put it back to sleep.">
+<meta property="og:type" content="website">
+<meta name="theme-color" content="#050507">
+<meta name="generator" content="aitherium family kit b6a7c2826ea554ee">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@300;400;500;600&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 512 512'%3E%3Cpolygon points='256,110 390,350 122,350' fill='none' stroke='%235EC9CC' stroke-width='30' stroke-linejoin='round'/%3E%3Ccircle cx='256' cy='262' r='50' fill='%235EC9CC'/%3E%3Ccircle cx='256' cy='262' r='24' fill='%23050507'/%3E%3C/svg%3E">
 <style>
-  :root{
-    --bg:#fbfbfa; --panel:#fff; --ink:#16161d; --dim:#5c5c6b; --line:#e4e4e8;
-    --accent:#3b5bdb; --accent-dim:#dbe2fb;
-    --mono:ui-monospace,SFMono-Regular,"SF Mono",Menlo,Consolas,monospace;
-    --sans:system-ui,-apple-system,"Segoe UI",Inter,Helvetica,Arial,sans-serif;
-  }
-  @media (prefers-color-scheme:dark){
-    :root:not([data-theme=light]){
-      --bg:#0d0d11; --panel:#15151c; --ink:#e8e8ef; --dim:#9a9aad; --line:#26262f;
-      --accent:#8ba4ff; --accent-dim:#1c2340;
-    }
-  }
-  :root[data-theme=dark]{
-    --bg:#0d0d11; --panel:#15151c; --ink:#e8e8ef; --dim:#9a9aad; --line:#26262f;
-    --accent:#8ba4ff; --accent-dim:#1c2340;
-  }
-  *{box-sizing:border-box}
-  body{margin:0;background:var(--bg);color:var(--ink);font-family:var(--sans);
-       line-height:1.65;-webkit-font-smoothing:antialiased}
-  .wrap{max-width:52rem;margin:0 auto;padding:0 1.25rem}
-  header{padding:4.5rem 0 2.5rem;border-bottom:1px solid var(--line)}
-  h1{font-size:clamp(2.1rem,6vw,3.1rem);line-height:1.1;margin:0 0 .6rem;
-     letter-spacing:-.02em;font-weight:650}
-  .tag{color:var(--dim);font-size:1.12rem;max-width:40rem;margin:0}
-  .pill{display:inline-block;font-family:var(--mono);font-size:.72rem;
-        padding:.2rem .55rem;border:1px solid var(--line);border-radius:999px;
-        color:var(--dim);margin-bottom:1.1rem}
-  h2{font-size:1.32rem;margin:3rem 0 .9rem;letter-spacing:-.01em}
-  p{margin:0 0 1rem}
-  code,pre{font-family:var(--mono);font-size:.87rem}
-  code{background:var(--accent-dim);padding:.12rem .34rem;border-radius:4px}
-  pre{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-      padding:1rem;overflow-x:auto;margin:0 0 1rem}
-  pre code{background:none;padding:0}
-  a{color:var(--accent)}
-  .swap{display:grid;gap:.75rem;grid-template-columns:1fr 1fr;margin:1.25rem 0}
-  @media (max-width:34rem){.swap{grid-template-columns:1fr}}
-  .card{background:var(--panel);border:1px solid var(--line);border-radius:10px;
-        padding:.9rem 1rem}
-  .card .l{color:var(--dim);font-size:.76rem;text-transform:uppercase;
-           letter-spacing:.06em;margin-bottom:.3rem}
-  .pairs a{display:inline-block;font-family:var(--mono);font-size:.82rem;
-           border:1px solid var(--line);border-radius:999px;padding:.18rem .6rem;
-           margin:.2rem .3rem .2rem 0;text-decoration:none}
-  footer{border-top:1px solid var(--line);margin-top:4rem;padding:2rem 0 4rem;
-         color:var(--dim);font-size:.86rem}
-  footer a{margin-right:1.1rem}
-  .toggle{position:absolute;top:1.1rem;right:1.1rem;background:var(--panel);
-          border:1px solid var(--line);color:var(--dim);border-radius:8px;
-          padding:.35rem .6rem;cursor:pointer;font-size:.78rem;font-family:var(--sans)}
+/* ═══════════════════════════════════════════════════════════════════════════
+   AITHERIUM FAMILY KIT — tokens (static flavour)   @family-kit v1
+   One palette for every static page in the family: the org hub, every aw*
+   brick's Pages site, the awdk docs, the Guide. Values are the same as the
+   React flavour of the kit on aitherium.com; a parity check (FK001) asserts
+   the two agree.
+
+   Rules this sheet exists to hold: ONE accent, no gradients, no glass, Inter
+   for the product voice and JetBrains Mono for the system voice.
+   This file is INLINED VERBATIM into public pages: name no internal path here.
+   ═══════════════════════════════════════════════════════════════════════════ */
+:root{
+  /* palette */
+  --fk-bg:#050507;
+  --fk-ink:#EDEFF5;
+  --fk-dim:rgba(237,239,245,.55);
+  --fk-faint:rgba(237,239,245,.35);
+  --fk-hairline:rgba(255,255,255,.08);
+  --fk-raise:rgba(255,255,255,.025);
+  --fk-accent:#5EC9CC;
+  --fk-accent-glow:rgba(94,201,204,.35);
+  --fk-accent-wash:rgba(94,201,204,.08);
+
+  /* type */
+  --fk-sans:'Inter',system-ui,-apple-system,'Segoe UI',Roboto,sans-serif;
+  --fk-mono:'JetBrains Mono',ui-monospace,'SF Mono','Cascadia Mono',Menlo,Consolas,'Liberation Mono',monospace;
+
+  /* shape + motion */
+  --fk-radius:12px;
+  --fk-radius-sm:8px;
+  --fk-ease:cubic-bezier(.2,.8,.2,1);
+  --fk-menubar-h:44px;
+  --fk-maxw:1180px;
+  --fk-dock-h:52px;
+
+  /* Aliases, so content written against older class contracts and the
+     constellation widget (which themes off --ink/--dim/--line/--panel) land on
+     THIS palette instead of their own fallbacks. Every one is the same colour
+     as a --fk-* token above; none is a second accent. */
+  --background:var(--fk-bg);
+  --foreground:var(--fk-ink);
+  --surface:var(--fk-raise);
+  --surface-2:var(--fk-raise);
+  --tx-2:var(--fk-dim);
+  --tx-muted:var(--fk-faint);
+  --border:var(--fk-hairline);
+  --accent:var(--fk-accent);
+  --accent-a04:rgba(94,201,204,.04);
+  --accent-a10:rgba(94,201,204,.10);
+  --accent-a30:rgba(94,201,204,.30);
+  --accent-a50:rgba(94,201,204,.50);
+  --accent-glow:var(--fk-accent-glow);
+  --cyan:var(--fk-accent);
+  --ink:var(--fk-ink);
+  --dim:var(--fk-dim);
+  --line:var(--fk-hairline);
+  --panel:var(--fk-bg);
+  --warn:var(--fk-dim);
+  --font:var(--fk-sans);
+  --sans:var(--fk-sans);
+  --mono:var(--fk-mono);
+}
+/* ═══════════════════════════════════════════════════════════════════════════
+   AITHERIUM FAMILY KIT — the OS frame (static flavour)   @family-kit v1
+   Menubar (mark · app · live · clock · ignite), ONE focused window with a mono
+   title, a dock, and the "About this OS" panel. Then the content contract the
+   generated pages already emit (.wrap .card .code .panel .orb ...), restyled
+   onto the kit so no generator keeps a palette of its own.
+   Needs tokens.css first. Zero JS required: spotlight.js only adds ⌘K.
+   ═══════════════════════════════════════════════════════════════════════════ */
+*,*::before,*::after{box-sizing:border-box}
+html{-webkit-text-size-adjust:100%;color-scheme:dark;background:var(--fk-bg)}
+body{margin:0;background:var(--fk-bg);color:var(--fk-ink);font:400 15px/1.65 var(--fk-sans);
+  letter-spacing:-.006em;-webkit-font-smoothing:antialiased}
+::selection{background:rgba(94,201,204,.28);color:var(--fk-ink)}
+a{color:var(--fk-ink);text-decoration-color:var(--fk-faint);text-underline-offset:3px}
+a:hover{color:var(--fk-accent)}
+:focus-visible{outline:1px solid var(--fk-accent);outline-offset:2px;border-radius:4px}
+img,svg,video{max-width:100%}
+code,pre,kbd,samp{font-family:var(--fk-mono)}
+.fk-mark{width:18px;height:18px;color:var(--fk-accent);flex:none;display:block}
+.fk-caps{font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim)}
+.fk-skip{position:absolute;left:-9999px}
+.fk-skip:focus{left:12px;top:8px;z-index:60;background:var(--fk-bg);padding:6px 10px}
+
+/* ─── menubar ─────────────────────────────────────────────────────────── */
+.fk-menubar{position:sticky;top:0;z-index:40;height:var(--fk-menubar-h);display:flex;align-items:center;
+  gap:18px;padding:0 20px;background:var(--fk-bg);border-bottom:1px solid var(--fk-hairline)}
+.fk-brand{display:flex;align-items:center;gap:12px;text-decoration:none;color:var(--fk-ink);min-width:0}
+.fk-app{font:600 14px/1 var(--fk-sans);letter-spacing:-.01em;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fk-sp{flex:1}
+.fk-links{display:flex;gap:18px}
+.fk-links a{font:400 13px/1 var(--fk-sans);color:var(--fk-dim);text-decoration:none;white-space:nowrap}
+.fk-links a:hover{color:var(--fk-ink)}
+.fk-k{display:inline-flex;align-items:center;gap:6px;font:400 12px/1 var(--fk-mono);color:var(--fk-dim);
+  text-decoration:none;background:none;border:0;padding:4px;cursor:pointer}
+.fk-k svg{width:14px;height:14px}
+.fk-live{display:inline-flex;align-items:center;gap:7px;font:400 12px/1 var(--fk-mono);color:var(--fk-dim)}
+.fk-dot{width:6px;height:6px;border-radius:50%;background:var(--fk-accent);box-shadow:0 0 8px var(--fk-accent-glow)}
+.fk-clock{font:500 12px/1 var(--fk-mono);color:var(--fk-ink);letter-spacing:.02em;min-width:9ch}
+.fk-clock:empty{display:none}
+.fk-ignite{display:inline-flex;align-items:center;gap:6px;height:28px;padding:0 14px;border-radius:999px;
+  background:var(--fk-accent);color:var(--fk-bg);font:500 13px/1 var(--fk-mono);text-transform:lowercase;text-decoration:none;white-space:nowrap}
+.fk-ignite:hover{color:var(--fk-bg);box-shadow:0 0 0 3px var(--fk-accent-wash)}
+
+/* ─── the window ──────────────────────────────────────────────────────── */
+.fk-window{max-width:var(--fk-maxw);margin:20px auto 0;border:1px solid var(--fk-hairline);
+  border-radius:var(--fk-radius);background:var(--fk-bg);overflow:hidden}
+.fk-titlebar{position:relative;height:40px;display:flex;align-items:center;justify-content:center;
+  padding:0 44px;border-bottom:1px solid var(--fk-hairline)}
+.fk-titlebar::before{content:"";position:absolute;left:16px;top:50%;width:11px;height:11px;margin-top:-6px;
+  border:1px solid var(--fk-faint);border-radius:50%}
+.fk-title{font:400 12px/1 var(--fk-mono);color:var(--fk-dim);white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+.fk-title b{color:var(--fk-ink);font-weight:500}
+/* The dock is a bar pinned to the bottom edge, full width and opaque, and the
+   page reserves its height: the viewport simply ends above it, so no content ever
+   sits half-visible beside or under a floating pill. The window also ends with a
+   dock-height of clear space, so its last line is never under it. */
+.fk-body{padding:8px 0 calc(var(--fk-dock-h) + 24px)}
+body{padding-bottom:calc(var(--fk-dock-h) + 24px)}
+
+/* ─── dock ────────────────────────────────────────────────────────────── */
+.fk-dock{position:fixed;left:0;right:0;bottom:0;z-index:40;display:flex;justify-content:center;gap:2px;
+  min-height:var(--fk-dock-h);align-items:center;padding:6px 12px calc(6px + env(safe-area-inset-bottom));
+  background:var(--fk-bg);border-top:1px solid var(--fk-hairline);overflow-x:auto;scrollbar-width:none}
+.fk-dock::-webkit-scrollbar{display:none}
+.fk-dock a{position:relative;display:flex;align-items:center;gap:8px;padding:8px 12px;border-radius:9px;
+  font:400 12px/1 var(--fk-mono);color:var(--fk-dim);text-decoration:none;white-space:nowrap}
+.fk-dock a:hover{color:var(--fk-ink);background:var(--fk-raise)}
+.fk-dock a[aria-current]{color:var(--fk-ink)}
+.fk-dock a[aria-current]::after{content:"";position:absolute;left:50%;bottom:2px;width:3px;height:3px;
+  margin-left:-1.5px;border-radius:50%;background:var(--fk-accent)}
+.fk-dock .fk-mark{width:15px;height:15px}
+.fk-dock .fk-sep{width:1px;margin:6px 4px;background:var(--fk-hairline);flex:none}
+
+/* ─── About this OS ───────────────────────────────────────────────────── */
+.fk-about{max-width:var(--fk-maxw);margin:20px auto 0;padding:28px 32px 30px;border:1px solid var(--fk-hairline);
+  border-radius:var(--fk-radius)}
+.fk-about-hd{display:flex;align-items:center;gap:12px;margin-bottom:20px}
+.fk-about-hd .fk-mark{width:26px;height:26px}
+.fk-about-hd h2{margin:0;font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim);border:0;padding:0}
+.fk-brandlines{display:flex;flex-wrap:wrap;gap:6px 28px;margin:0 0 22px;font:300 clamp(1.05rem,2vw,1.3rem)/1.4 var(--fk-sans);letter-spacing:-.01em;color:var(--fk-ink)}
+.fk-brandlines span+span{color:var(--fk-dim)}
+/* Element 0: the brand's own motif (aitherium.org, owner ruling 2026-09-13). */
+.fk-element{display:inline-grid;grid-template-rows:auto 1fr auto;width:84px;height:92px;margin:0 0 16px;padding:8px 10px;border:1px solid var(--fk-accent);border-radius:var(--fk-radius-sm);box-shadow:0 0 24px var(--fk-accent-wash)}
+.fk-el-no{font:400 11px/1 var(--fk-mono);color:var(--fk-dim)}
+.fk-el-sy{font:200 38px/1 var(--fk-sans);color:var(--fk-accent);align-self:center;letter-spacing:-.02em}
+.fk-el-nm{font:400 9px/1 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim)}
+.fk-family{display:grid;grid-template-columns:repeat(auto-fill,minmax(200px,1fr));gap:0;margin:0;
+  border-top:1px solid var(--fk-hairline)}
+.fk-family a{display:block;padding:14px 16px 14px 0;border-bottom:1px solid var(--fk-hairline);text-decoration:none}
+.fk-family .n{display:block;font:500 15px/1.3 var(--fk-sans);color:var(--fk-ink)}
+.fk-family .n.m{font:500 14px/1.3 var(--fk-mono)}
+.fk-family .r{display:block;font:400 12px/1.5 var(--fk-mono);color:var(--fk-dim);margin-top:2px}
+.fk-family a:hover .n{color:var(--fk-accent)}
+.fk-colophon{margin:18px 0 0;font:400 12px/1.6 var(--fk-mono);color:var(--fk-faint)}
+.fk-colophon a{color:var(--fk-dim)}
+
+/* ─── spotlight (⌘K) ──────────────────────────────────────────────────── */
+.fk-spot{position:fixed;inset:0;z-index:60;display:none;align-items:flex-start;justify-content:center;
+  padding:12vh 16px 16px;background:rgba(5,5,7,.86)}
+.fk-spot.open{display:flex}
+.fk-spot-box{width:100%;max-width:620px;background:var(--fk-bg);border:1px solid var(--fk-hairline);
+  border-radius:var(--fk-radius);box-shadow:0 0 0 1px var(--fk-accent-wash),0 24px 80px rgba(0,0,0,.6);overflow:hidden}
+.fk-spot-in{display:flex;align-items:center;gap:12px;padding:0 16px;border-bottom:1px solid var(--fk-hairline)}
+.fk-spot-in input{flex:1;height:52px;background:none;border:0;outline:0;color:var(--fk-ink);font:400 15px/1 var(--fk-mono)}
+.fk-spot-in input::placeholder{color:var(--fk-faint)}
+.fk-spot-in input::-webkit-search-cancel-button{-webkit-appearance:none;appearance:none}
+.fk-spot ul{list-style:none;margin:0;padding:6px;max-height:52vh;overflow-y:auto}
+.fk-spot li a{display:flex;align-items:baseline;gap:12px;padding:10px 12px;border-radius:var(--fk-radius-sm);
+  text-decoration:none;color:var(--fk-ink)}
+.fk-spot li a .k{margin-left:auto;font:400 11px/1 var(--fk-mono);letter-spacing:.12em;text-transform:uppercase;color:var(--fk-faint)}
+.fk-spot li a .d{font:400 12px/1.4 var(--fk-mono);color:var(--fk-dim);overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
+.fk-spot li[aria-selected="true"] a{background:var(--fk-accent-wash)}
+.fk-spot li[aria-selected="true"] a .t{color:var(--fk-accent)}
+.fk-spot .fk-none{padding:18px;font:400 12px/1 var(--fk-mono);color:var(--fk-faint)}
+
+/* ─── content contract ────────────────────────────────────────────────── */
+.wrap{max-width:1040px;margin:0 auto;padding:0 40px}
+header,section{padding:36px 0}
+.fk-body > header:first-child,.fk-body > .wrap:first-child > header:first-child{padding-top:52px}
+h1{font:300 clamp(2.2rem,5.2vw,3.6rem)/1.06 var(--fk-sans);letter-spacing:-.03em;margin:0 0 18px;color:var(--fk-ink)}
+h1 .g,.g{color:var(--fk-accent);background:none;-webkit-text-fill-color:currentColor}
+h2{font:400 clamp(1.4rem,2.6vw,1.9rem)/1.2 var(--fk-sans);letter-spacing:-.02em;margin:0 0 10px;color:var(--fk-ink)}
+section h2:not(:first-child),.readme h2{margin-top:36px}
+h3{font:500 16px/1.35 var(--fk-sans);letter-spacing:-.01em;margin:0 0 6px}
+h4{font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim);margin:22px 0 8px}
+p{margin:0 0 14px}
+.lede{font:300 clamp(1.05rem,1.8vw,1.25rem)/1.6 var(--fk-sans);color:var(--fk-dim);max-width:62ch;margin:0 0 28px}
+.sub{color:var(--fk-dim);max-width:66ch;margin:0 0 22px}
+.eyebrow,.pill{display:inline-flex;align-items:center;gap:10px;margin:0 0 22px;font:500 11px/1.4 var(--fk-mono);
+  letter-spacing:.18em;text-transform:uppercase;color:var(--fk-accent)}
+.eyebrow .dot{width:5px;height:5px;border-radius:50%;background:var(--fk-accent)}
+.exp{display:flex;align-items:center;gap:10px;margin:0 0 16px;font:400 12px/1.5 var(--fk-mono);color:var(--fk-dim)}
+.exp .glyph{color:var(--fk-accent)}
+.exp b{color:var(--fk-ink);font-weight:500}
+.cta{display:flex;flex-wrap:wrap;gap:10px;margin:0 0 32px}
+.btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;height:38px;padding:0 18px;border-radius:999px;
+  font:500 14px/1 var(--fk-sans);text-decoration:none;border:1px solid var(--fk-hairline);color:var(--fk-ink);background:none;cursor:pointer}
+.btn-p{background:var(--fk-accent);border-color:var(--fk-accent);color:var(--fk-bg)}
+.btn-p:hover{color:var(--fk-bg);box-shadow:0 0 0 3px var(--fk-accent-wash)}
+.btn-s{border-color:transparent;padding:0 6px;color:var(--fk-dim);text-decoration:underline;text-decoration-color:var(--fk-faint);text-underline-offset:4px}
+.btn-s:hover{color:var(--fk-ink)}
+.hide-sm{}
+code{font-size:.88em;color:var(--fk-ink);background:var(--fk-raise);border:1px solid var(--fk-hairline);border-radius:5px;padding:.08em .38em}
+pre{margin:0 0 16px;padding:14px 16px;border:1px solid var(--fk-hairline);border-radius:var(--fk-radius-sm);
+  background:var(--fk-raise);overflow-x:auto;font:400 13px/1.6 var(--fk-mono);color:var(--fk-ink)}
+pre code{background:none;border:0;padding:0;font-size:inherit}
+.code{position:relative;margin:0 0 28px;border:1px solid var(--fk-hairline);border-radius:var(--fk-radius);overflow:hidden}
+.code .bar{display:flex;align-items:center;gap:6px;height:34px;padding:0 14px;border-bottom:1px solid var(--fk-hairline)}
+.code .bar > span:not(.t){display:none}
+.code .bar .t{font:400 12px/1 var(--fk-mono);color:var(--fk-dim)}
+.code pre{margin:0;border:0;border-radius:0;background:none;padding:16px 18px}
+.code pre.prose{white-space:pre-wrap;font-family:var(--fk-sans);font-size:14px;color:var(--fk-dim)}
+.code pre .c{color:var(--fk-faint)}
+.code pre .k{color:var(--fk-accent)}
+.code pre .s{color:var(--fk-ink)}
+.code .copy{position:absolute;top:6px;right:8px;height:22px;padding:0 8px;border:1px solid var(--fk-hairline);border-radius:6px;
+  background:var(--fk-bg);color:var(--fk-dim);font:400 11px/1 var(--fk-mono);letter-spacing:.12em;text-transform:uppercase;cursor:pointer}
+.grid{display:grid;gap:0;grid-template-columns:repeat(auto-fill,minmax(280px,1fr));border-top:1px solid var(--fk-hairline);
+  border-left:1px solid var(--fk-hairline);margin:0 0 8px}
+.card{padding:20px 22px;border-right:1px solid var(--fk-hairline);border-bottom:1px solid var(--fk-hairline);background:none}
+.card .ico,.card .l{display:block;margin:0 0 10px;font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-accent)}
+.card p{color:var(--fk-dim);font-size:14px;margin:0 0 10px}
+.card h3 a{text-decoration:none}
+.card h3 em{display:block;margin-top:6px;font:400 11px/1.4 var(--fk-mono);font-style:normal;color:var(--fk-faint);letter-spacing:.04em}
+.card h3.m,.m{font-family:var(--fk-mono);letter-spacing:0}
+.card.pending{opacity:.55}
+.card pre{font-size:12px;padding:9px 12px;margin:0}
+.stats{display:flex;flex-wrap:wrap;gap:0;border-top:1px solid var(--fk-hairline);margin:8px 0 0}
+.stat{flex:1 1 150px;padding:18px 20px 4px 0}
+.stat .v{display:block;font:300 1.9rem/1.1 var(--fk-sans);letter-spacing:-.03em;color:var(--fk-ink)}
+.stat .l{display:block;margin-top:6px;font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim)}
+.note{margin:18px 0 0;padding:12px 16px;border-left:2px solid var(--fk-accent);color:var(--fk-dim);font-size:14px;background:none}
+blockquote{margin:0 0 16px;padding:4px 16px;border-left:2px solid var(--fk-hairline);color:var(--fk-dim)}
+table{border-collapse:collapse;width:100%;margin:0 0 18px;font-size:14px;display:block;overflow-x:auto}
+th,td{text-align:left;padding:8px 12px;border-bottom:1px solid var(--fk-hairline);vertical-align:top}
+th{font:500 11px/1.4 var(--fk-mono);letter-spacing:.14em;text-transform:uppercase;color:var(--fk-dim)}
+hr{border:0;border-top:1px solid var(--fk-hairline);margin:28px 0}
+ul,ol{padding-left:1.3em;margin:0 0 14px}
+li{margin:0 0 4px}
+.panel{border:1px solid var(--fk-hairline);border-radius:var(--fk-radius);padding:0 0 12px;overflow:hidden}
+.panel-hd{display:flex;align-items:center;gap:10px;height:40px;padding:0 16px;border-bottom:1px solid var(--fk-hairline)}
+.panel-hd .t{font:400 12px/1 var(--fk-mono);color:var(--fk-dim)}
+.panel-hd .sp{flex:1}
+.panel-hd .count{font:400 12px/1 var(--fk-mono);color:var(--fk-faint)}
+.field-row{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:12px;padding:14px 16px 0}
+.field-row label{display:block;margin:0 0 6px;font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim)}
+.field{width:100%;height:38px;padding:0 12px;border:1px solid var(--fk-hairline);border-radius:var(--fk-radius-sm);
+  background:none;color:var(--fk-ink);font:400 14px/1 var(--fk-mono)}
+.field:focus{outline:0;border-color:var(--fk-accent)}
+.chips{display:flex;flex-wrap:wrap;gap:6px;padding:12px 16px 0}
+.chip{height:26px;padding:0 10px;border:1px solid var(--fk-hairline);border-radius:999px;background:none;color:var(--fk-dim);
+  font:400 12px/1 var(--fk-mono);cursor:pointer}
+.chip[aria-pressed="true"]{color:var(--fk-bg);background:var(--fk-accent);border-color:var(--fk-accent)}
+.rows{margin:12px 0 0;max-height:520px;overflow-y:auto;border-top:1px solid var(--fk-hairline)}
+.row-item{display:grid;grid-template-columns:minmax(0,14rem) minmax(0,1fr) auto;gap:16px;align-items:baseline;
+  padding:10px 16px;border-bottom:1px solid var(--fk-hairline);text-decoration:none;color:var(--fk-ink)}
+.row-item:hover{background:var(--fk-raise)}
+.row-item .n{font:500 13px/1.4 var(--fk-mono);overflow:hidden;text-overflow:ellipsis}
+.row-item .d{font-size:13px;color:var(--fk-dim)}
+.row-item .tag{font:400 11px/1 var(--fk-mono);color:var(--fk-faint)}
+.empty{padding:16px;font:400 12px/1.4 var(--fk-mono);color:var(--fk-faint)}
+.kv{display:grid;grid-template-columns:repeat(auto-fit,minmax(140px,1fr));gap:0;margin:16px 16px 0;border-top:1px solid var(--fk-hairline)}
+.cell{padding:14px 12px 0 0}
+.cell .l{display:block;font:500 11px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-dim)}
+.cell .v{display:block;margin-top:6px;font:300 1.6rem/1.1 var(--fk-sans);color:var(--fk-ink)}
+.cell.flat .v{color:var(--fk-dim)}
+.bar-cmp{display:flex;flex-direction:column;gap:6px;margin:16px 16px 0}
+.bar-cmp .track{height:6px;border-radius:3px;background:var(--fk-hairline);overflow:hidden}
+.bar-cmp .fill{height:100%;background:var(--fk-accent)}
+.bar-cmp .lbl{display:flex;justify-content:space-between;font:400 11px/1 var(--fk-mono);color:var(--fk-faint)}
+
+/* the estate strip: flat doors, the page you are on lit. No canvas: the mark
+   is the only ornament in this family. */
+.uni-canvas,#aither-constellation canvas{display:none!important}
+.uni-nodes{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));border-top:1px solid var(--fk-hairline);
+  border-left:1px solid var(--fk-hairline)}
+.orb{display:block;padding:16px 18px;border-right:1px solid var(--fk-hairline);border-bottom:1px solid var(--fk-hairline);text-decoration:none}
+.orb .k{display:block;font:500 10px/1.4 var(--fk-mono);letter-spacing:.18em;text-transform:uppercase;color:var(--fk-faint)}
+.orb .n{display:block;margin:4px 0;font:500 14px/1.3 var(--fk-mono);color:var(--fk-ink)}
+.orb .d{display:block;font-size:13px;line-height:1.5;color:var(--fk-dim)}
+.orb.here{box-shadow:inset 2px 0 0 var(--fk-accent)}
+.orb.here .n,.orb:hover .n{color:var(--fk-accent)}
+
+/* hub + brick-page vocabulary */
+.tag{color:var(--fk-ink);font-size:14px;margin:0 0 10px}
+.why,.adopt{color:var(--fk-dim);font-size:13.5px;margin:0 0 10px}
+.adopt strong{color:var(--fk-ink);font-weight:500}
+.members a{display:inline-block;margin:0 6px 6px 0;padding:3px 9px;border:1px solid var(--fk-hairline);border-radius:999px;
+  font:400 12px/1.4 var(--fk-mono);text-decoration:none;color:var(--fk-dim)}
+.members a:hover{color:var(--fk-accent);border-color:var(--fk-accent)}
+.fk-section-h{display:flex;align-items:baseline;gap:12px;margin:0 0 16px}
+.fk-section-h .n{font:400 12px/1 var(--fk-mono);color:var(--fk-faint)}
+
+/* ─── phone ───────────────────────────────────────────────────────────── */
+@media (max-width:760px){
+  body{font-size:15px}
+  .fk-menubar{gap:12px;padding:0 14px}
+  .fk-links,.fk-clock,.fk-live span,.fk-k span,.hide-sm{display:none}
+  .fk-window{margin:0;border-left:0;border-right:0;border-radius:0}
+  .fk-about{margin:0;border-left:0;border-right:0;border-radius:0;padding:24px 20px}
+  .wrap{padding:0 20px}
+  header,section{padding:26px 0}
+  .fk-body > header:first-child,.fk-body > .wrap:first-child > header:first-child{padding-top:34px}
+  .grid,.uni-nodes{grid-template-columns:1fr}
+  .row-item{grid-template-columns:minmax(0,1fr) auto}
+  .row-item .d{grid-column:1 / -1;grid-row:2}
+  .fk-dock{justify-content:flex-start;padding-left:8px;padding-right:8px}
+}
+
+/* ─── motion: only when the reader has not asked for less ─────────────── */
+@media (prefers-reduced-motion:no-preference){
+  a,.btn,.chip,.fk-dock a,.fk-ignite{transition:color .18s var(--fk-ease),background-color .18s var(--fk-ease),
+    border-color .18s var(--fk-ease),box-shadow .18s var(--fk-ease)}
+  .fk-spot.open .fk-spot-box{animation:fk-rise .22s var(--fk-ease)}
+  @keyframes fk-rise{from{opacity:0;transform:translateY(8px)}to{opacity:1;transform:none}}
+}
+@media print{.fk-menubar,.fk-dock,.fk-spot{display:none}}
 </style>
 </head>
 <body>
-<button class="toggle" id="t" aria-label="Toggle colour scheme">◐</button>
-
-<div class="wrap">
-<header>
-  <span class="pill">tool · pip install awrise</span>
-  <h1>awrise</h1>
-  <p class="tag">Wake an agent on a schedule, let it do one thing, and put it back to sleep.</p>
+<a class="fk-skip" href="#fk-main">Skip to content</a>
+<header class="fk-menubar" role="banner">
+  <a class="fk-brand" href="./" aria-label="awrise home"><svg class="fk-mark" viewBox="0 0 512 512" fill="none" aria-hidden="true"><g transform="translate(256 256) scale(0.86) translate(-256 -256)"><polygon points="256,96 400,360 112,360" stroke="currentColor" stroke-width="26" stroke-linejoin="round"/><circle cx="256" cy="262" r="52" fill="currentColor"/><circle cx="256" cy="262" r="26" fill="#050507"/><circle cx="256" cy="262" r="10" fill="currentColor"/></g></svg><span class="fk-app m">awrise</span></a>
+  <span class="fk-sp"></span>
+  <nav class="fk-links" aria-label="awrise"><a href="#adopt">Adopt it</a><a href="#world">The world</a><a href="https://github.com/Aitherium/awrise">Source</a><a href="aither-manifest.json">Manifest</a></nav>
+  <a class="fk-k" href="#fk-about" data-fk-spotlight aria-label="Search (Ctrl K)"><svg viewBox="0 0 16 16" fill="none" aria-hidden="true"><circle cx="7" cy="7" r="5" stroke="currentColor" stroke-width="1.4"/><path d="M11 11l3.5 3.5" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"/></svg><span>⌘K</span></a>
+  <span class="fk-live"><i class="fk-dot" aria-hidden="true"></i><span>live</span></span>
+  <time class="fk-clock" data-fk-clock></time>
+  <a class="fk-ignite" href="https://aitherium.com/">ignite <span aria-hidden="true">→</span></a>
 </header>
-<p class="world"><strong>The Aither World</strong> is an operating system for agents — a Linux you can hand to one, the runtimes it works in, and the tools it works with. <strong>awrise</strong> is one of its 65 bricks — each installs on its own, runs offline, and needs no account.</p>
-
+<main class="fk-window" id="fk-main">
+  <div class="fk-titlebar"><span class="fk-title"><b>awrise</b> — /</span></div>
+  <div class="fk-body">
+<header class="wrap">
+  <span class="pill">tool · pip install awrise</span>
+  <h1 class="m">awrise</h1>
+  <p class="lede">Wake an agent on a schedule, let it do one thing, and put it back to sleep.</p>
+  <p class="world"><strong>The Aither World</strong> is an operating system for agents — a Linux you can hand to one, the runtimes it works in, and the tools it works with. <strong>awrise</strong> is one of its 66 bricks — each installs on its own, runs offline, and needs no account.</p>
+</header>
+<section class="wrap">
 <h2>The problem</h2>
-<p>A scheduled agent fails as a SILENCE. A wake that never fired because the host was down, a wake that overlapped the run before it and corrupted shared state, and a wake that hung forever holding its slot are INDISTINGUISHABLE from outside: in every case nothing happened and nothing said so. Cron has no memory -- a missed minute is simply gone -- so &quot;not due yet&quot; and &quot;due, and never ran&quot; read identically, and the operator finds out days later by noticing absent output rather than by being told.</p>
-<div class="swap"><div class="card"><div class="l">instead of trusting</div>that a scheduled agent ran at all, and ran exactly once</div><div class="card"><div class="l">you check</div>a durable record of every wake -- fired, skipped, overlapped or timed out -- each with its reason</div></div>
+<p class="sub">A scheduled agent fails as a SILENCE. A wake that never fired because the host was down, a wake that overlapped the run before it and corrupted shared state, and a wake that hung forever holding its slot are INDISTINGUISHABLE from outside: in every case nothing happened and nothing said so. Cron has no memory -- a missed minute is simply gone -- so &quot;not due yet&quot; and &quot;due, and never ran&quot; read identically, and the operator finds out days later by noticing absent output rather than by being told.</p>
+<div class="grid"><div class="card"><span class="l">instead of trusting</span><p>that a scheduled agent ran at all, and ran exactly once</p></div><div class="card"><span class="l">you check</span><p>a durable record of every wake -- fired, skipped, overlapped or timed out -- each with its reason</p></div></div>
+</section>
+<section class="wrap" id="adopt">
 <h2>Adopt it</h2>
 <pre><code>pip install awrise</code></pre>
 <p>Wake something on a schedule, let it do one thing, and put it back to sleep.</p>
 
 <h2>Pairs with</h2>
-<p class="pairs"><a href="https://aitherium.github.io/awdk/">awdk</a><a href="https://aitherium.github.io/awrun/">awrun</a><a href="https://aitherium.github.io/awrelay/">awrelay</a><a href="https://aitherium.github.io/awm/">awm</a><a href="https://aitherium.github.io/awask/">awask</a><a href="https://aitherium.github.io/awdesk/">awdesk</a><a href="https://aitherium.github.io/awsh/">awsh</a><a href="https://aitherium.github.io/awdecide/">awdecide</a></p>
-<p style="color:var(--dim);font-size:.9rem">Pairing is composition, never dependency —
+<p class="members"><a href="https://aitherium.github.io/awdk/">awdk</a><a href="https://aitherium.github.io/awrun/">awrun</a><a href="https://aitherium.github.io/awrelay/">awrelay</a><a href="https://aitherium.github.io/awm/">awm</a><a href="https://aitherium.github.io/awask/">awask</a><a href="https://aitherium.github.io/awdesk/">awdesk</a><a href="https://aitherium.github.io/awsh/">awsh</a><a href="https://aitherium.github.io/awdecide/">awdecide</a></p>
+<p class="why">Pairing is composition, never dependency —
 awrise installs and runs on its own.</p>
-
+</section>
+<section class="wrap" id="world">
 <h2>The rest of the Aither World</h2>
-<p>Every brick below is live, drawn from that repository's own published manifest.</p>
+<p class="sub">Every brick below is live, drawn from that repository's own published manifest.</p>
 <div id="aither-constellation" data-active="awrise"></div>
-<script src="aither-constellation.js" defer></script>
-
-<footer>
-  <a href="https://github.com/Aitherium/awrise">Source</a>
-  <a href="aither-manifest.json">Manifest</a>
-  <a href="https://aitherium.github.io/">The Aither World</a>
-  <div style="margin-top:.8rem">Generated from the ecosystem registry. Edit the
-  registry, not this page.</div>
-</footer>
+</section>
 </div>
+</main>
 
+<footer class="fk-about" id="fk-about" aria-labelledby="fk-about-h">
+  <div class="fk-about-hd"><svg class="fk-mark" viewBox="0 0 512 512" fill="none" aria-hidden="true"><g transform="translate(256 256) scale(0.86) translate(-256 -256)"><polygon points="256,96 400,360 112,360" stroke="currentColor" stroke-width="26" stroke-linejoin="round"/><circle cx="256" cy="262" r="52" fill="currentColor"/><circle cx="256" cy="262" r="26" fill="#050507"/><circle cx="256" cy="262" r="10" fill="currentColor"/></g></svg><h2 id="fk-about-h">About this OS</h2></div>
+  <div class="fk-element" aria-label="Aitherium, element 0, symbol Ai, the element of creation"><span class="fk-el-no">0</span><span class="fk-el-sy">Ai</span><span class="fk-el-nm">aitherium</span></div>
+  <p class="fk-brandlines"><span>Aitherium · the element of creation</span><span>Aither — the medium creation moves through</span></p>
+  <div class="fk-family"><a href="https://aitherium.com/about"><span class="n">Aitherium</span><span class="r">the company</span></a><a href="https://aitherium.com/"><span class="n">AitherOS</span><span class="r">the OS</span></a><a href="https://aitherium.github.io/awnix/"><span class="n m">awnix</span><span class="r">the base</span></a><a href="https://aitherium.github.io/awdk/"><span class="n m">awdk</span><span class="r">the SDK</span></a><a href="https://aitherium.github.io/awsh/"><span class="n m">awsh</span><span class="r">the shell</span></a><a href="https://aitherium.github.io/"><span class="n m">aw* bricks</span><span class="r">the frameworks</span></a><a href="https://aitherium.com/studio"><span class="n">The Studio</span><span class="r">build apps, agents, workflows</span></a></div>
+  <p class="fk-colophon">Generated from the ecosystem registry. Edit the registry, not this page. <a href="https://aitherium.github.io/">The Aither World</a>.</p>
+</footer>
+<nav class="fk-dock" aria-label="The family"><a href="https://aitherium.com/" aria-label="AitherOS"><svg class="fk-mark" viewBox="0 0 512 512" fill="none" aria-hidden="true"><g transform="translate(256 256) scale(0.86) translate(-256 -256)"><polygon points="256,96 400,360 112,360" stroke="currentColor" stroke-width="26" stroke-linejoin="round"/><circle cx="256" cy="262" r="52" fill="currentColor"/><circle cx="256" cy="262" r="26" fill="#050507"/><circle cx="256" cy="262" r="10" fill="currentColor"/></g></svg></a><span class="fk-sep" aria-hidden="true"></span><a href="https://aitherium.github.io/" aria-current="page">bricks</a><a href="https://aitherium.github.io/awdk/">awdk</a><a href="https://aitherium.github.io/awsh/">awsh</a><a href="https://aitherium.github.io/awnix/">awnix</a><a href="https://aitherium.github.io/awknowledge/">guide</a><a href="https://blog.aitherium.com/">journal</a></nav>
+<script type="application/json" id="fk-index">[{"t":"awdk","h":"https://aitherium.github.io/awdk/","k":"pairs with","d":""},{"t":"awrun","h":"https://aitherium.github.io/awrun/","k":"pairs with","d":""},{"t":"awrelay","h":"https://aitherium.github.io/awrelay/","k":"pairs with","d":""},{"t":"awm","h":"https://aitherium.github.io/awm/","k":"pairs with","d":""},{"t":"awask","h":"https://aitherium.github.io/awask/","k":"pairs with","d":""},{"t":"awdesk","h":"https://aitherium.github.io/awdesk/","k":"pairs with","d":""},{"t":"awsh","h":"https://aitherium.github.io/awsh/","k":"pairs with","d":""},{"t":"awdecide","h":"https://aitherium.github.io/awdecide/","k":"pairs with","d":""},{"t":"Aitherium","h":"https://aitherium.com/about","k":"family","d":"the company"},{"t":"AitherOS","h":"https://aitherium.com/","k":"family","d":"the OS"},{"t":"awnix","h":"https://aitherium.github.io/awnix/","k":"family","d":"the base"},{"t":"awdk","h":"https://aitherium.github.io/awdk/","k":"family","d":"the SDK"},{"t":"awsh","h":"https://aitherium.github.io/awsh/","k":"family","d":"the shell"},{"t":"aw* bricks","h":"https://aitherium.github.io/","k":"family","d":"the frameworks"},{"t":"The Studio","h":"https://aitherium.com/studio","k":"family","d":"build apps, agents, workflows"},{"t":"journal","h":"https://blog.aitherium.com/","k":"family","d":"how all of it is built, measured and operated"}]</script>
+<script src="aither-constellation.js" defer></script>
 <script>
-(function(){
-  var r=document.documentElement,b=document.getElementById('t');
-  try{var s=localStorage.getItem('aither-theme');if(s)r.setAttribute('data-theme',s);}catch(e){}
-  b.addEventListener('click',function(){
-    var d=r.getAttribute('data-theme')==='dark'?'light':'dark';
-    r.setAttribute('data-theme',d);
-    try{localStorage.setItem('aither-theme',d);}catch(e){}
+/* AITHERIUM FAMILY KIT — spotlight + clock (static flavour)   @family-spotlight v1
+   ⌘K / Ctrl+K (or "/") opens a search over the JSON index the page ships in
+   its application/json element #fk-index: [{t: title, h: href, k: kind, d: detail}].
+   This file is inlined into a script element, so it must never contain a
+   closing script tag, even in a comment.
+   No dependencies, nothing fetched. With JS off the ⌘K control is a plain link
+   to the page's "About this OS" panel, so every destination stays reachable. */
+(function () {
+  var d = document;
+  var clock = d.querySelector("[data-fk-clock]");
+  function tick() {
+    var n = new Date();
+    var day = ["sun", "mon", "tue", "wed", "thu", "fri", "sat"][n.getDay()];
+    var p = function (x) { return (x < 10 ? "0" : "") + x; };
+    clock.textContent = day + " " + p(n.getHours()) + ":" + p(n.getMinutes());
+  }
+  if (clock) { tick(); setInterval(tick, 15000); }
+
+  var src = d.getElementById("fk-index");
+  var items = [];
+  try { items = JSON.parse(src ? src.textContent : "[]"); } catch (e) { items = []; }
+  if (!items.length) return;
+
+  var box = d.createElement("div");
+  box.className = "fk-spot";
+  box.setAttribute("role", "dialog");
+  box.setAttribute("aria-modal", "true");
+  box.setAttribute("aria-label", "Search");
+  box.innerHTML = '<div class="fk-spot-box"><label class="fk-spot-in"><span class="fk-caps">⌘K</span>' +
+    '<input type="search" autocomplete="off" spellcheck="false" placeholder="jump to a page, a brick, a command" ' +
+    'aria-controls="fk-spot-list"></label><ul id="fk-spot-list" role="listbox"></ul></div>';
+  d.body.appendChild(box);
+  var input = box.querySelector("input"), list = box.querySelector("ul"), sel = 0, shown = [], last = null;
+
+  function esc(s) {
+    return String(s == null ? "" : s).replace(/[&<>"]/g, function (c) {
+      return { "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c];
+    });
+  }
+  function score(it, q) {
+    if (!q) return 1;
+    var t = (it.t || "").toLowerCase(), hay = t + " " + (it.k || "") + " " + (it.d || "").toLowerCase();
+    if (t.indexOf(q) === 0) return 3;
+    if (t.indexOf(q) > -1) return 2;
+    return hay.indexOf(q) > -1 ? 1 : 0;
+  }
+  function render() {
+    var q = input.value.trim().toLowerCase();
+    shown = items.map(function (it, i) { return { it: it, s: score(it, q), i: i }; })
+      .filter(function (x) { return x.s > 0; })
+      .sort(function (a, b) { return b.s - a.s || a.i - b.i; })
+      .slice(0, 40);
+    sel = Math.min(sel, Math.max(0, shown.length - 1));
+    list.innerHTML = shown.length ? shown.map(function (x, i) {
+      return '<li role="option" aria-selected="' + (i === sel) + '"><a href="' + esc(x.it.h) + '">' +
+        '<span class="t' + (/^aw/.test(x.it.t || "") ? " m" : "") + '">' + esc(x.it.t) + '</span>' +
+        (x.it.d ? '<span class="d">' + esc(x.it.d) + '</span>' : '') +
+        '<span class="k">' + esc(x.it.k || "") + '</span></a></li>';
+    }).join("") : '<li class="fk-none">nothing matches that</li>';
+  }
+  function open() {
+    last = d.activeElement;
+    box.classList.add("open");
+    input.value = ""; sel = 0; render(); input.focus();
+  }
+  function close() {
+    box.classList.remove("open");
+    if (last && last.focus) last.focus();
+  }
+  function move(n) {
+    if (!shown.length) return;
+    sel = (sel + n + shown.length) % shown.length; render();
+    var li = list.children[sel]; if (li && li.scrollIntoView) li.scrollIntoView({ block: "nearest" });
+  }
+
+  d.addEventListener("keydown", function (e) {
+    var k = e.key, isOpen = box.classList.contains("open");
+    var typing = /^(INPUT|TEXTAREA|SELECT)$/.test((e.target && e.target.tagName) || "") || (e.target && e.target.isContentEditable);
+    if ((e.metaKey || e.ctrlKey) && (k === "k" || k === "K")) { e.preventDefault(); if (isOpen) close(); else open(); return; }
+    if (!isOpen) { if (k === "/" && !typing) { e.preventDefault(); open(); } return; }
+    if (k === "Escape") { e.preventDefault(); close(); }
+    else if (k === "ArrowDown") { e.preventDefault(); move(1); }
+    else if (k === "ArrowUp") { e.preventDefault(); move(-1); }
+    else if (k === "Enter" && shown[sel]) { e.preventDefault(); location.href = shown[sel].it.h; }
   });
+  input.addEventListener("input", function () { sel = 0; render(); });
+  box.addEventListener("click", function (e) { if (e.target === box) close(); });
+  var triggers = d.querySelectorAll("[data-fk-spotlight]");
+  for (var i = 0; i < triggers.length; i++) {
+    triggers[i].addEventListener("click", function (e) { e.preventDefault(); open(); });
+  }
 })();
 </script>
 </body>
