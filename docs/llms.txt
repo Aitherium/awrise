@@ -1,0 +1,40 @@
+# awrise
+
+> Wake an agent on a schedule, let it do one thing, and put it back to sleep.
+
+A scheduled agent fails as a SILENCE. A wake that never fired because the host was down, a wake that overlapped the run before it and corrupted shared state, and a wake that hung forever holding its slot are INDISTINGUISHABLE from outside: in every case nothing happened and nothing said so. Cron has no memory -- a missed minute is simply gone -- so "not due yet" and "due, and never ran" read identically, and the operator finds out days later by noticing absent output rather than by being told.
+
+## Install
+
+```
+pip install awrise
+```
+
+## In Claude Code
+
+- skill: `/awrise`
+
+## Use it in 30 seconds
+
+Wake something on a schedule, let it do one thing, and put it back to sleep.
+
+## Composes with
+
+- [awdk](https://aitherium.github.io/awdk/) — Build AI agent fleets — 3 lines, any backend, local or cloud.
+- [awrun](https://aitherium.github.io/awrun/) — A priority-aware queue and dispatcher for agentic runs and ad-hoc CI builds. It also judges whether the runner pool is big enough for the queue it is draining, and can ask a host to grow it -- reserving capacity is zero-sum, so a saturated pool needs more of it, not a different share of it.
+- [awrelay](https://aitherium.github.io/awrelay/) — Portable agent messaging — findings, alerts, coordination.
+- [awm](https://aitherium.github.io/awm/) — A portable, scoped agent memory.
+- [awask](https://aitherium.github.io/awask/) — Your agent asks you a question — and acts on your answer.
+- [awdesk](https://aitherium.github.io/awdesk/) — Aither World Desk -- the desktop body of AitherOS Online: tray, avatars, decision cards, the Living Desktop as an overlay.
+- [awsh](https://aitherium.github.io/awsh/) — Your terminal answers you -- type a question where a command would go.
+- [awdecide](https://aitherium.github.io/awdecide/) — One typed-decision contract -- choice / score / bool with a probability -- over a ladder of backends you already run (rules, tiny local models, an LLM's logprobs), fail-closed, with a Brier ledger that resolves every decision against its outcome.
+
+## Where it lives
+
+- Repo: https://github.com/Aitherium/awrise
+- Docs: https://aitherium.github.io/awrise/
+- Manifest (keys + the one-line adoption story): https://aitherium.github.io/awrise/aither-manifest.json
+
+This repository is mirrored from the AitherOS monorepo by `.github/workflows/sync-awrise.yml`; hand edits made here are overwritten on the next sync — change the source instead.
+
+Everything Aitherium, in one file for agents: https://aitherium.com/llms.txt
