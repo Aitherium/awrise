@@ -58,6 +58,12 @@ def _ctx_for(kind: str) -> hostclock.Context:
 @pytest.fixture
 def home(tmp_path, monkeypatch) -> Path:
     monkeypatch.setenv("AWRISE_HOME", str(tmp_path / "home"))
+    # LOCALAPPDATA too: a deep tmp_path pushes the schtasks /tr value over its
+    # cap and _short_enough_bin_dir falls back to %LOCALAPPDATA%\awrise\bin --
+    # the REAL profile, shared by every test. Measured 2026-10-07 on a hosted
+    # windows runner: one test left a stranger's run-due.cmd there and the next
+    # (correctly) refused to install over it. Tests never touch the real profile.
+    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lad"))
     return store.home()
 
 
