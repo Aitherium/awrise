@@ -522,6 +522,18 @@ def test_wl006_closes_a_detached_wake_from_its_own_receipt(home, tmp_path):
     assert "exit_code=0" in " ".join(finding.details)
 
 
+def test_wl006_accepts_a_receipt_stamped_a_hair_before_the_wake(home, tmp_path):
+    """A coarse filesystem clock can stamp a receipt written right after the
+    start as slightly BEFORE it (WL006 flaked UNJUDGED on a hosted runner,
+    2026-10-07). Inside the skew it is this wake's; far outside, still stale."""
+    _detached_with_receipt(home, tmp_path, {"exit_code": 0},
+                           age_s=checks.RECEIPT_MTIME_SKEW_S / 4)
+    assert _find(home, "WL006").code == checks.OK
+    _detached_with_receipt(home, tmp_path, {"exit_code": 0},
+                           age_s=checks.RECEIPT_MTIME_SKEW_S * 30)
+    assert _find(home, "WL006").code == checks.UNJUDGED
+
+
 def test_wl006_is_a_violation_when_the_receipt_reports_failure(home, tmp_path):
     """A job that declared a receipt gets to say it FAILED -- that outranks
     the abstention, or declaring one would only ever soften the verdict."""

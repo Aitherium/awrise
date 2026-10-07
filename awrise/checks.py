@@ -334,6 +334,16 @@ def wl005_no_job_can_hold_the_pass(rows: Sequence[dict], jobs: Dict[str, dict], 
     return Finding("WL005", OK, f"{len(judged)} attached job(s) finish inside a tick")
 
 
+#: How far a receipt's mtime may sit BEFORE the wake's start and still count as
+#: this wake's. File mtimes come from a coarse kernel clock that can trail
+#: time.time() by milliseconds, so a child that writes its receipt the instant
+#: it starts can stamp it "before" the wake -- measured 2026-10-07 as a WL006
+#: UNJUDGED on a hosted ubuntu runner for a receipt written right after the
+#: start. A previous run's receipt is a whole interval old, so 2 s cannot let
+#: last run's verdict through (the hour-old stale test still refuses it).
+RECEIPT_MTIME_SKEW_S = 2.0
+
+
 def _receipt_verdict(job: dict) -> Optional[tuple]:
     """Read a detached job's OWN receipt. ``None`` means it cannot be judged.
 
@@ -354,7 +364,7 @@ def _receipt_verdict(job: dict) -> Optional[tuple]:
     if not isinstance(data, dict) or "exit_code" not in data:
         return None
     started = clock.parse_ts(job.get("last_started_at"))
-    if started is not None and mtime < started.timestamp():
+    if started is not None and mtime + RECEIPT_MTIME_SKEW_S < started.timestamp():
         return None
     code = data.get("exit_code")
     if not isinstance(code, int):

@@ -19,8 +19,10 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import shutil
 import subprocess
 import sys
+import tempfile
 from datetime import timedelta
 from pathlib import Path
 
@@ -56,15 +58,24 @@ def _ctx_for(kind: str) -> hostclock.Context:
 
 
 @pytest.fixture
-def home(tmp_path, monkeypatch) -> Path:
+def home(tmp_path, monkeypatch):
     monkeypatch.setenv("AWRISE_HOME", str(tmp_path / "home"))
     # LOCALAPPDATA too: a deep tmp_path pushes the schtasks /tr value over its
     # cap and _short_enough_bin_dir falls back to %LOCALAPPDATA%\awrise\bin --
     # the REAL profile, shared by every test. Measured 2026-10-07 on a hosted
     # windows runner: one test left a stranger's run-due.cmd there and the next
     # (correctly) refused to install over it. Tests never touch the real profile.
-    monkeypatch.setenv("LOCALAPPDATA", str(tmp_path / "lad"))
-    return store.home()
+    #
+    # It must ALSO be SHORT, or the fallback it exists for cannot fit either:
+    # pointing it at tmp_path/lad (deep) made the schtasks install refuse at 279
+    # characters against a 261 cap. A fresh dir directly under the temp root is
+    # as short as the real profile's and still owned by this test alone.
+    short = Path(tempfile.mkdtemp(prefix="awr"))
+    monkeypatch.setenv("LOCALAPPDATA", str(short))
+    try:
+        yield store.home()
+    finally:
+        shutil.rmtree(short, ignore_errors=True)
 
 
 @pytest.fixture
