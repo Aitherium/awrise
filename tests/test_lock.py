@@ -293,3 +293,55 @@ def test_is_alive_reads_self_true_and_a_dead_pid_false():
     assert lock.is_alive(os.getpid())
     assert not lock.is_alive(DEAD_PID)
     assert not lock.is_alive(0) and not lock.is_alive(-1)
+
+
+def _plant_detached(tmp_path, child_pid, age, timeout_s):
+    path = _plant(tmp_path, "j", DEAD_PID, age, timeout_s=timeout_s, child_pid=child_pid)
+    holder = json.loads((path / "wake.json").read_text(encoding="utf-8"))
+    holder["detached"] = True
+    (path / "wake.json").write_text(json.dumps(holder), encoding="utf-8")
+    return path
+
+
+def _sleeper():
+    import subprocess
+    return subprocess.Popen([sys.executable, "-c", "import time; time.sleep(120)"])
+
+
+def test_a_detached_child_past_its_timeout_is_ended_and_the_lock_retaken(tmp_path, monkeypatch):
+    # 2026-10-12: a hung detached child held its job's lock for two days.
+    monkeypatch.setattr(lock, "GRACE_S", 0.0)
+    child = _sleeper()
+    try:
+        time.sleep(0.5)
+        _plant_detached(tmp_path, child.pid, timedelta(seconds=5), timeout_s=1)
+        handle = lock.acquire(tmp_path, "j", _wake("w-next0001"), 1)
+        assert isinstance(handle, lock.Lock), handle
+        assert child.wait(timeout=15) is not None
+    finally:
+        if child.poll() is None:
+            child.kill()
+
+
+def test_a_detached_child_inside_its_timeout_stays_held(tmp_path):
+    child = _sleeper()
+    try:
+        _plant_detached(tmp_path, child.pid, timedelta(seconds=1), timeout_s=3600)
+        verdict = lock.acquire(tmp_path, "j", _wake("w-next0001"), 3600)
+        assert isinstance(verdict, lock.Held) and verdict.detached and not verdict.overdue
+        assert child.poll() is None
+    finally:
+        child.kill()
+
+
+def test_an_overdue_pid_that_started_after_the_wake_is_never_killed(tmp_path, monkeypatch):
+    # The pid now belongs to a process newer than the wake: a reuse, not the child.
+    monkeypatch.setattr(lock, "GRACE_S", 0.0)
+    child = _sleeper()
+    try:
+        _plant_detached(tmp_path, child.pid, timedelta(seconds=600), timeout_s=1)
+        verdict = lock.acquire(tmp_path, "j", _wake("w-next0001"), 1)
+        assert isinstance(verdict, lock.Held) and verdict.overdue
+        assert child.poll() is None, "a process newer than the wake must survive"
+    finally:
+        child.kill()

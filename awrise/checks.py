@@ -269,6 +269,10 @@ def wl004_no_lock_outlives_its_wake(base: Path, jobs: Dict[str, dict], **_kw) ->
         timeout = (jobs.get(job) or {}).get("timeout_s")
         bound = float(_int(timeout) or lock.DEFAULT_TIMEOUT_S) + lock.GRACE_S
         verdict = lock.judge(job, path, bound)
+        if isinstance(verdict, lock.Held) and verdict.overdue:
+            stale.append(f"{job}: detached child pid {verdict.pid} outlived its timeout "
+                         "and could not be ended -- every pass skips this job")
+            continue
         if isinstance(verdict, lock.Held):
             held += 1
             continue

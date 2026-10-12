@@ -125,6 +125,11 @@ class Held:
     #: that lives for hours would otherwise answer "a pass is in progress" for
     #: a host clock that has stopped.
     detached: bool = False
+    #: A detached child still alive past its job's ``timeout_s + GRACE_S``.
+    #: Measured 2026-10-12: an awgraph reindex child hung for two days and every
+    #: pass in between skipped the job behind its lock, so the declared timeout
+    #: meant nothing. ``acquire`` ends an overdue child before taking the lock.
+    overdue: bool = False
 
     @property
     def reason(self) -> str:
@@ -279,6 +284,9 @@ def judge(job: str, path: Path, fallback_bound_s: float, settle_s: float = 0.0) 
         # it out instead would start a SECOND copy beside a live one.
         child = _int(holder.get("child_pid"))
         if child > 0 and is_alive(child):
+            # Alive: still held. Past the job's own declared ceiling it is OVERDUE --
+            # still held here (judging never kills), and `acquire` ends it.
+            overdue = _int(holder.get("timeout_s")) > 0 and age is not None and age > bound
             return Held(
                 job,
                 wake_id=holder.get("wake_id") or None,
@@ -286,6 +294,7 @@ def judge(job: str, path: Path, fallback_bound_s: float, settle_s: float = 0.0) 
                 pid=child,
                 age_s=age,
                 detached=True,
+                overdue=overdue,
             )
         return "detached_child_gone"
     if age is not None and age > bound:
@@ -310,6 +319,103 @@ def judge(job: str, path: Path, fallback_bound_s: float, settle_s: float = 0.0) 
     if child_pid > 0 and is_alive(child_pid):
         return held  # the pass died but its child runs on: still one wake in flight
     return "pid_gone"
+
+
+# ------------------------------------------------------- overdue detached child
+
+
+def _process_started_epoch(pid: int) -> Optional[float]:
+    """When ``pid`` started (epoch seconds), or None when it cannot be read.
+
+    The guard against pid reuse: a child is ended only when the process now
+    holding its pid started no later than the wake that spawned it.
+    """
+    if sys.platform == "win32":
+        return _process_started_windows(pid)
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            fields = fh.read().rsplit(")", 1)[1].split()
+        ticks = int(fields[19])
+        with open("/proc/stat", encoding="utf-8") as fh:
+            btime = next(int(line.split()[1]) for line in fh if line.startswith("btime"))
+        return btime + ticks / os.sysconf("SC_CLK_TCK")
+    except (OSError, ValueError, IndexError, StopIteration):
+        return None
+
+
+def _process_started_windows(pid: int) -> Optional[float]:
+    import ctypes
+    from ctypes import wintypes
+
+    kernel32 = ctypes.WinDLL("kernel32", use_last_error=True)
+    kernel32.OpenProcess.restype = ctypes.c_void_p
+    kernel32.OpenProcess.argtypes = (ctypes.c_uint32, ctypes.c_int, ctypes.c_uint32)
+    _ft = ctypes.POINTER(wintypes.FILETIME)
+    kernel32.GetProcessTimes.argtypes = (ctypes.c_void_p, _ft, _ft, _ft, _ft)
+    kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
+    handle = kernel32.OpenProcess(0x1000, 0, pid)
+    if not handle:
+        return None
+    try:
+        times = [wintypes.FILETIME() for _ in range(4)]
+        if not kernel32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
+            return None
+        ft = (times[0].dwHighDateTime << 32) | times[0].dwLowDateTime
+        return ft / 1e7 - 11644473600.0  # 1601-based 100ns ticks -> unix epoch
+    finally:
+        kernel32.CloseHandle(handle)
+
+
+def _kill_tree(pid: int, pgid: Optional[int]) -> None:
+    if sys.platform == "win32":
+        import subprocess
+
+        subprocess.run(
+            ["taskkill", "/PID", str(pid), "/T", "/F"],
+            capture_output=True, timeout=30, check=False,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        return
+    import signal
+
+    with contextlib.suppress(OSError):
+        if pgid and pgid > 0:
+            os.killpg(pgid, signal.SIGKILL)
+        else:
+            os.kill(pid, signal.SIGKILL)
+
+
+def end_overdue_child(holder: dict, wait_s: float = 10.0) -> bool:
+    """End a detached child that outlived its declared timeout. True when it is gone.
+
+    Refuses (False) unless the pid provably belongs to the wake: it must have
+    started no later than the wake's ``started_at`` plus a minute. An unreadable
+    start time is a refusal -- a reused pid is never killed on a guess.
+    """
+    pid = _int(holder.get("child_pid"))
+    if pid <= 0 or not is_alive(pid):
+        return pid > 0
+    try:
+        started = clock.parse_ts(holder.get("started_at"))
+    except ValueError:
+        started = None
+    proc_started = _process_started_epoch(pid)
+    if started is None or proc_started is None:
+        return False
+    if proc_started > started.timestamp() + 60.0:
+        return False  # the pid was reused by a newer process
+    try:
+        _kill_tree(pid, _int(holder.get("child_pgid")) or None)
+    except Exception as exc:  # noqa: BLE001 -- taskkill timeout etc.: report, keep the lock
+        sys.stderr.write(f"awrise: could not end overdue child {pid}: {exc}\n")
+        return False
+    deadline = time.monotonic() + wait_s
+    while is_alive(pid) and time.monotonic() < deadline:
+        time.sleep(0.1)
+    gone = not is_alive(pid)
+    if gone:
+        sys.stderr.write(f"awrise: ended detached child {pid} past its timeout\n")
+    return gone
 
 
 def _remove(path: Path) -> None:
@@ -393,6 +499,11 @@ def _take(path: Path, job: str, wake: dict, timeout_s: Optional[float] = None) -
             os.mkdir(path)
         except FileExistsError:
             verdict = judge(job, path, fallback_bound, settle_s=SETTLE_S)
+            if isinstance(verdict, Held) and verdict.overdue:
+                holder, _ok = _read_holder(path)
+                if not end_overdue_child(holder or {}):
+                    return verdict  # could not prove or end it: WL004 names it
+                verdict = judge(job, path, fallback_bound)
             if isinstance(verdict, Held):
                 return verdict
             _claim_stale(job, path, fallback_bound)
