@@ -184,6 +184,8 @@ def test_schtasks_registers_an_onstart_trigger_as_well_as_the_interval():
     assert len(commands) == 2
     assert commands[0][commands[0].index("/sc") + 1] == "minute"
     assert commands[0][commands[0].index("/mo") + 1] == "1"
+    # without /du Windows repeats for the default PT10M and the clock goes quiet (2026-10-31)
+    assert commands[0][commands[0].index("/du") + 1] == "9999:59"
     assert commands[1][commands[1].index("/sc") + 1] == "onstart"
     assert commands[1][commands[1].index("/tn") + 1] == hostclock.BOOT_TASK_NAME
     assert commands[0][commands[0].index("/tr") + 1] == commands[1][commands[1].index("/tr") + 1]

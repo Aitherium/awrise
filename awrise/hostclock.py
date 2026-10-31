@@ -600,6 +600,12 @@ def schtasks_commands(ctx: Context) -> List[List[str]]:
             "minute",
             "/mo",
             str(ctx.minutes),
+            # Windows defaults an interval trigger's repetition to PT10M, so the clock
+            # stopped ticking ten minutes after it was installed (measured 2026-10-31:
+            # last tick 28,000 s old while the task read "registered and not running").
+            # 9999:59 is schtasks' maximum, i.e. effectively forever.
+            "/du",
+            "9999:59",
             "/rl",
             "limited",
             "/tr",
