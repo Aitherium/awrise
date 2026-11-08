@@ -17,15 +17,5 @@
     "awsh",
     "awdecide"
   ],
-  "includes": [],
-  "metrics": {
-    "files": {
-      "value": 65,
-      "as_of": "2026-11-08T07:11:35-08:00"
-    },
-    "tests": {
-      "value": 32,
-      "as_of": "2026-11-08T07:11:35-08:00"
-    }
-  }
+  "includes": []
 }
