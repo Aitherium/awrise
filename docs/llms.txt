@@ -10,10 +10,6 @@ A scheduled agent fails as a SILENCE. A wake that never fired because the host w
 pip install awrise
 ```
 
-## In Claude Code
-
-- skill: `/awrise`
-
 ## Use it in 30 seconds
 
 Wake something on a schedule, let it do one thing, and put it back to sleep.
