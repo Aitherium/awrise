@@ -76,7 +76,20 @@ def is_alive(pid: int) -> bool:
         if exc.errno == errno.EPERM:
             return True
         return False
-    return True
+    # A zombie still answers signal 0 until its parent reaps it, but it runs
+    # nothing and holds nothing. Counting it alive meant a SIGKILLed overdue
+    # child whose parent had not reaped it yet kept its job's lock Held.
+    return not _is_zombie(pid)
+
+
+def _is_zombie(pid: int) -> bool:
+    """True when /proc says ``pid`` has exited and awaits reaping (state Z/X)."""
+    try:
+        with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
+            state = fh.read().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return False  # no /proc (macOS) or already gone: signal 0 decides
+    return state in ("Z", "X")
 
 
 def _is_alive_windows(pid: int) -> bool:
