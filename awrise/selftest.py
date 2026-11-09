@@ -25,7 +25,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Callable, Iterator, List, Tuple
 
-from . import checks, cli, clock, executors, hostclock, ledger, lock, store
+from . import checks, cli, clock, executors, hostclock, ledger, lock, store, why
 from .executors import Outcome
 
 
@@ -906,13 +906,13 @@ def _pid_alive(pid: int) -> bool:
         if done == pid:
             return False
     except ChildProcessError:
-        pass
+        done = 0  # not our child: nothing to reap, read its state below
     try:
         with open(f"/proc/{pid}/stat", encoding="utf-8") as fh:
             if fh.read().rsplit(")", 1)[1].split()[0] == "Z":
                 return False
     except (OSError, IndexError):
-        pass
+        return True  # no /proc (or an unreadable stat): signal 0 already said alive
     return True
 
 
@@ -2280,6 +2280,40 @@ def card_raised_after_n_failures() -> None:
         assert [o.split(":", 1)[0] for o in options] == ["disable", "keep"], options
 
 
+def a_dependency_down_why_is_held_and_a_code_bug_is_not() -> None:
+    """The 2026-11-08 desk panel: `moe-tiers-publish 1713x · exited 2`. A real
+    child printing a dependency-down line is recorded with that line as its
+    `why`, held after HOLD_AFTER identical wakes, and its next due window is a
+    `skipped_held` policy skip -- not another failure. Negative twin: the same
+    streak of a code-bug line is never held."""
+    down = (
+        "import sys; print('publish: no llama-server on spark.local:8118', file=sys.stderr); "
+        "sys.exit(2)"
+    )
+    bug = "import sys; print('KeyError: tiers', file=sys.stderr); sys.exit(1)"
+    with _home() as base:
+        # 10m, not 1h: the hold is capped at an hour, so an hourly job's hold
+        # is one window and skips nothing -- a 10m job's first hold is 20m.
+        assert _add("moe", every="10m", run=down, executor="python", timeout=60) == 0
+        assert _add("bug", every="10m", run=bug, executor="python", timeout=60) == 0
+        for step in range(why.HOLD_AFTER):
+            with _clock_forward(600 * step + 1):
+                assert _run_due() == 1
+        jobs = store.load(base)
+        row = [r for r in ledger.read(base, job="moe") if r.get("event") == "finished"][-1]
+        assert row["why"] == "publish: no llama-server on spark.local:8118", row
+        assert row["cause"] == "dependency-down" and "no llama-server" in row["output_tail"]
+        assert jobs["moe"]["held_until"], jobs["moe"]
+        assert jobs["bug"]["held_until"] is None and jobs["bug"]["last_cause"] == "code-bug"
+        with _clock_forward(600 * why.HOLD_AFTER + 1):
+            _run_due()
+        moe = [r for r in ledger.read(base, job="moe") if r.get("event") == "finished"]
+        bug_rows = [r for r in ledger.read(base, job="bug") if r.get("event") == "finished"]
+        assert moe[-1]["state"] == "skipped_held", moe[-1]
+        assert bug_rows[-1]["state"] == "failure", bug_rows[-1]
+        assert store.load(base)["moe"]["consecutive_failures"] == why.HOLD_AFTER
+
+
 def _detached_job(base: Path, receipt_code, fails: int = 3) -> Path:
     """One enabled detached job whose last wake is `detached`, 10 minutes ago, with an
     optional receipt written AFTER that wake (None = no receipt file)."""
@@ -3042,6 +3076,7 @@ CASES: List[Tuple[str, Callable[[], None]]] = [
         import_routine_refuses_a_block_pattern_and_a_metacharacter_under_apply,
         import_routine_action_args_is_refused_by_name_and_never_concatenated,
         history_import_fleet_is_read_only_and_flags_unparseable_records,
+        a_dependency_down_why_is_held_and_a_code_bug_is_not,
     )
 ]
 

@@ -42,7 +42,7 @@ from dataclasses import dataclass, replace
 from pathlib import Path
 from typing import Callable, List, Optional, Tuple
 
-from . import clock, ledger
+from . import clock, ledger, why
 
 #: Spec keys this module reads (asserted against store.SPEC_DEFAULTS by the
 #: self-test, together with the keys the CLI reads).
@@ -111,6 +111,10 @@ class Outcome:
     wake_s: Optional[float] = None
     wake_state: Optional[str] = None
     park_state: Optional[str] = None
+    #: stdout+stderr, last ``why.TAIL_LINES`` lines, capped and redacted -- the
+    #: longer tail a BAD wake's row carries so its ``why`` can be read off the
+    #: record (``stdout_tail``/``stderr_tail`` stay at their old 1 KB each).
+    output_tail: str = ""
 
 
 def _spawn_kwargs(detach: bool) -> dict:
@@ -220,6 +224,7 @@ def _run_process(
             stdout_tail=ledger.tail(out),
             stderr_tail=ledger.tail(err),
             child_pid=proc.pid,
+            output_tail=why.output_tail(out, err),
         )
     except Exception as exc:  # noqa: BLE001 - a leaked child is the worse outcome
         # The wait itself failed (an I/O error on the pipe, a deadline the
@@ -238,6 +243,7 @@ def _run_process(
         stdout_tail=ledger.tail(out),
         stderr_tail=ledger.tail(err),
         child_pid=proc.pid,
+        output_tail=why.output_tail(out, err),
     )
 
 

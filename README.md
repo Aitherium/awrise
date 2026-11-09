@@ -76,8 +76,9 @@ hand-run passes reads as a clock that has never fired, which is what it is.
 | `run-due [--quiet] [--dry-run] [--prune 30d]` | one pass: reconcile, tick, run every due job, exit |
 | `run --name N [--force]` | run one job now, due or not |
 | `history [--job N] [--since 7d] [--event E] [--json] [--judge]` | the ledger; `--judge` turns it into a verdict (drift or absence) and exits 2 on a window too young to judge |
-| `status` | per-job verdict and the host-clock line; exit 1 on a failing job |
-| `explain --name N` | why that job did or did not fire on the last tick |
+| `status` | per-job verdict and the host-clock line; a failing job shows its `why` (its own last error line) and `cause` bucket, a held one `held: <dependency>`; exit 1 on a failing or held job |
+| `explain --name N` | why that job did or did not fire on the last tick, plus the last bad wake's why, cause, streak, hold and output tail |
+| `investigate --name N [--dispatch] [--harness H] [--cwd D]` | the brief a fix agent needs (why, cause, command, fenced output tail); `--dispatch` starts that agent on the harness daemon (`POST /sessions` + `/submit`) |
 | `checks [--since 7d] [--json]` | WL001-WL004 against the record: an unclosed wake, a reason outside the closed set, a job that should have woken and did not, a stale lock |
 | `prewarm [--apply] [--json] [--ledger-dir D] [--exclude GLOB] [--park-after] [--allow-derived-units]` | read the usage ledger and propose one daily wake per unit something asked for yesterday; prints, and schedules nothing without `--apply` |
 | `prune [--keep 30d] [--dry-run] [--force]` | drop ledger day files older than a window |
@@ -358,6 +359,7 @@ list below is the output of `awrise --self-test --list` and must stay equal to i
 - `import_routine_refuses_a_block_pattern_and_a_metacharacter_under_apply`
 - `import_routine_action_args_is_refused_by_name_and_never_concatenated`
 - `history_import_fleet_is_read_only_and_flags_unparseable_records`
+- `a_dependency_down_why_is_held_and_a_code_bug_is_not`
 
 ## Design
 

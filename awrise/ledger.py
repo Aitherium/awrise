@@ -45,6 +45,7 @@ EVENTS = frozenset(
         "card_raised",
         "card_answered",
         "report_error",
+        "dispatched",
     }
 )
 STATES = frozenset(
@@ -62,6 +63,7 @@ STATES = frozenset(
         "skipped_empty",
         "skipped_unresolvable",
         "skipped_predicted",
+        "skipped_held",
         "orphaned",
         "would_fire",
     }
@@ -78,6 +80,22 @@ _REDACT = (
     (re.compile(r"\bgh[ps]_[A-Za-z0-9]{6,}"), "<redacted:gh>"),
     (re.compile(r"\bAKIA[A-Z0-9]{8,}"), "<redacted:akia>"),
     (re.compile(r"\bxox[bp]-[A-Za-z0-9\-]{6,}"), "<redacted:slack>"),
+    (re.compile(r"\b[sp]k_live_[A-Za-z0-9]{6,}"), "<redacted:stripe>"),
+    (
+        re.compile(r"\beyJ[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{8,}\.[A-Za-z0-9_\-]{6,}"),
+        "<redacted:jwt>",
+    ),
+    # key=value / key: value where the key names a credential. The key is kept
+    # so the line still says WHAT was wrong; only the value is masked, and a
+    # value an earlier pattern already masked is left alone.
+    (
+        re.compile(
+            r"(?i)\b((?:api[_-]?key|token|secret|password|passwd|pwd|"
+            r"x-api-key|x-internal-key|client[_-]?secret|access[_-]?key)"
+            r"[\"']?\s*[=:]\s*[\"']?)(?!<redacted)[^\s\"',;&]{6,}"
+        ),
+        r"\1<redacted:kv>",
+    ),
 )
 
 

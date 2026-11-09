@@ -32,7 +32,7 @@ import time
 from pathlib import Path
 from typing import Dict, Iterable, Optional
 
-from . import clock, executors, ledger
+from . import clock, executors, ledger, why
 
 SCHEMA = 2
 STORE_NAME = "jobs.json"
@@ -198,6 +198,20 @@ STATE_DEFAULTS: Dict[str, object] = {
     "consecutive_failures": 0,
     "created_at": None,
     "updated_at": None,
+    # WHY the last bad wake failed (see why.py). Additive like the wake block:
+    # a store written before these keys loads unchanged and gains them on its
+    # next save. ``last_why`` is the job's own last error line; ``last_cause``
+    # its bucket; ``why_streak`` how many bad wakes in a row said the same
+    # thing, since ``why_since``. ``held_until``/``held_on``: a dependency-down
+    # job is skipped until then instead of piling up failures. ``why_card``:
+    # ``<why key>:<card id>`` -- ONE card per (job, why streak).
+    "last_why": None,
+    "last_cause": None,
+    "why_streak": 0,
+    "why_since": None,
+    "held_until": None,
+    "held_on": None,
+    "why_card": None,
 }
 STATE_KEYS = tuple(STATE_DEFAULTS)
 Jobs = Dict[str, dict]
@@ -801,7 +815,14 @@ def validate_record(name: str, job: object) -> dict:
                 "the wake, so parking its unit would stop it mid-run",
             )
     full["report"] = validate_report(name, full["report"])
-    for field in ("last_started_at", "last_finished_at", "created_at", "updated_at"):
+    for field in (
+        "last_started_at",
+        "last_finished_at",
+        "created_at",
+        "updated_at",
+        "why_since",
+        "held_until",
+    ):
         value = full[field]
         if value is None:
             continue
@@ -813,12 +834,15 @@ def validate_record(name: str, job: object) -> dict:
             raise bad(field, f"is not an ISO timestamp ({exc})") from exc
     if full["last_state"] is not None and full["last_state"] not in ledger.STATES:
         raise bad("last_state", "is not a ledger state")
-    for field in ("last_wake_id", "last_reason"):
+    for field in ("last_wake_id", "last_reason", "last_why", "held_on", "why_card"):
         if full[field] is not None and not isinstance(full[field], str):
             raise bad(field, "must be a string or null")
-    fails = full["consecutive_failures"]
-    if isinstance(fails, bool) or not isinstance(fails, int) or fails < 0:
-        raise bad("consecutive_failures", "must be a non-negative integer")
+    if full["last_cause"] is not None and full["last_cause"] not in why.CAUSES:
+        raise bad("last_cause", f"must be one of {', '.join(why.CAUSES)} or null")
+    for field in ("consecutive_failures", "why_streak"):
+        count = full[field]
+        if isinstance(count, bool) or not isinstance(count, int) or count < 0:
+            raise bad(field, "must be a non-negative integer")
     return full
 
 
