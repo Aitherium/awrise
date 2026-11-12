@@ -376,8 +376,28 @@ def _receipt_verdict(job: dict) -> Optional[tuple]:
     return code, str(p)
 
 
+def _wake_in_flight(base: Optional[Path], name: str, job: dict) -> bool:
+    """True while a live holder (the detached child) still holds ``name``'s lock.
+
+    A detached child may write a receipt the moment it starts -- netindex_osint.py
+    wrote ``exit_code: 2, "started; did not finish"`` first, so a run killed partway
+    could never read as the previous run's success. Read as a verdict while the
+    child still runs, that placeholder failed the wake on the next tick (issue
+    #16309, failing x3). A receipt is only a verdict once its writer is gone.
+    Without ``base`` nothing can be asked, and the old behaviour stands.
+    """
+    if base is None:
+        return False
+    try:
+        return lock.inspect(base, name, job.get("timeout_s")) is not None
+    except OSError:
+        # An unreadable lock directory is HELD by lock.judge's own rule; reading
+        # it as "done" would hand the placeholder its false verdict back.
+        return True
+
+
 def wl006_a_detached_wake_is_not_a_verdict(
-    rows: Sequence[dict], jobs: Dict[str, dict], **_kw
+    rows: Sequence[dict], jobs: Dict[str, dict], base: Optional[Path] = None, **_kw
 ) -> Finding:
     """`detached` says the child was SPAWNED, never that it succeeded.
 
@@ -396,10 +416,14 @@ def wl006_a_detached_wake_is_not_a_verdict(
     blind: List[str] = []
     judged: List[str] = []
     failed: List[str] = []
+    running: List[str] = []
     for name, job in sorted(jobs.items()):
         if not job.get("enabled", True) or not job.get("detach"):
             continue
         if job.get("last_state") != "detached":
+            continue
+        if _wake_in_flight(base, name, job):
+            running.append(f"{name}: detached child still running; no verdict yet")
             continue
         fails = _int(job.get("consecutive_failures"))
         verdict = _receipt_verdict(job)
@@ -424,7 +448,7 @@ def wl006_a_detached_wake_is_not_a_verdict(
     if failed:
         return Finding(
             "WL006", VIOLATION, f"{len(failed)} detached wake(s) reported failure",
-            failed + blind,
+            failed + blind + running,
         )
     if not blind:
         note = (
@@ -432,10 +456,12 @@ def wl006_a_detached_wake_is_not_a_verdict(
             if judged
             else "no enabled detached job is awaiting a verdict"
         )
-        return Finding("WL006", OK, note, judged)
+        if running:
+            note += f"; {len(running)} still running"
+        return Finding("WL006", OK, note, judged + running)
     return Finding(
         "WL006", UNJUDGED, f"{len(blind)} detached wake(s) with no observed outcome",
-        blind + judged,
+        blind + judged + running,
     )
 
 

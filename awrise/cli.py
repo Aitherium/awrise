@@ -592,7 +592,7 @@ def reconcile(
             },
         )
         touched.extend(recovered)
-    for name, code, where in _judge_detached_by_receipt(jobs):
+    for name, code, where in _judge_detached_by_receipt(jobs, base):
         # A detached wake has no finished row with an exit code (the pass closed at
         # spawn), so its own receipt is the verdict. Stamping it here is what moves
         # consecutive_failures: before this the counter only ever changed on attached
@@ -623,13 +623,19 @@ def reconcile(
     return jobs, closed, live
 
 
-def _judge_detached_by_receipt(jobs: dict) -> List[Tuple[str, int, str]]:
+def _judge_detached_by_receipt(
+    jobs: dict, base: Optional[Path] = None
+) -> List[Tuple[str, int, str]]:
     """Close each enabled detached job's last wake from its OWN receipt.
 
     Only a job whose last wake is still `detached` and whose receipt is NEWER than
     that wake (checks._receipt_verdict) is judged, so a receipt is read once per wake
-    and the previous run's receipt can never pass for this one. Mutates ``jobs``:
-    last_state becomes success/failure and consecutive_failures resets or grows.
+    and the previous run's receipt can never pass for this one. With ``base``, a job
+    whose lock is still held by a live child is NOT judged: the wake is in flight,
+    and a receipt the child wrote at start is a placeholder, not its verdict
+    (issue #16309: netindex-osint-refresh read "started; did not finish" exit 2 on
+    the next tick while it ran, and failed x3). Mutates ``jobs``: last_state becomes
+    success/failure and consecutive_failures resets or grows.
     Returns (job, exit_code, receipt path) per judged job.
     """
     judged: List[Tuple[str, int, str]] = []
@@ -637,6 +643,8 @@ def _judge_detached_by_receipt(jobs: dict) -> List[Tuple[str, int, str]]:
         if not job.get("enabled", True) or not job.get("detach"):
             continue
         if job.get("last_state") != "detached":
+            continue
+        if checks._wake_in_flight(base, name, job):
             continue
         verdict = checks._receipt_verdict(job)
         if verdict is None:

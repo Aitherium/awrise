@@ -2369,6 +2369,34 @@ def reconcile_stamps_a_detached_wake_from_its_receipt() -> None:
         assert job["last_state"] == "failure" and job["consecutive_failures"] == 4, job
 
 
+def a_running_detached_child_is_not_judged_by_its_receipt() -> None:
+    """Issue #16309: a child that writes `exit_code: 2` as a start placeholder was
+    failed on the next tick while it still ran. A live lock holder = no verdict."""
+    with _home() as base:
+        _detached_job(base, 2, fails=0)
+        held = lock.lock_path(base, "d")
+        held.mkdir(parents=True)
+        holder = {
+            "wake_id": store.load(base)["d"].get("last_wake_id") or "w-live",
+            "pass_id": "p-gone", "job": "d", "pass_pid": 0,
+            "child_pid": os.getpid(), "child_pgid": None, "detached": True,
+            "started_at": store.load(base)["d"]["last_started_at"], "timeout_s": None,
+        }
+        (held / lock.HOLDER_FILE).write_text(json.dumps(holder), encoding="utf-8")
+        cli.reconcile(base, store.load(base), "p-selftest", "selftest")
+        job = store.load(base)["d"]
+        assert job["last_state"] == "detached" and job["consecutive_failures"] == 0, job
+        wl006 = checks.wl006_a_detached_wake_is_not_a_verdict(
+            rows=[], jobs=store.load(base), base=base
+        )
+        assert wl006.code != checks.VIOLATION, (wl006.summary, wl006.details)
+        # negative twin: the child is gone (lock released) -> the receipt IS the verdict
+        lock._remove(held)
+        cli.reconcile(base, store.load(base), "p-selftest-2", "selftest")
+        job = store.load(base)["d"]
+        assert job["last_state"] == "failure" and job["consecutive_failures"] == 1, job
+
+
 def report_block_validated_at_add() -> None:
     with _home() as base:
         assert _add("a", report_relay="ops") == 1, "a channel with no '#' was stored"
@@ -3057,6 +3085,7 @@ CASES: List[Tuple[str, Callable[[], None]]] = [
         card_raised_after_n_failures,
         status_judges_a_detached_wake_by_its_receipt,
         reconcile_stamps_a_detached_wake_from_its_receipt,
+        a_running_detached_child_is_not_judged_by_its_receipt,
         report_block_validated_at_add,
         cwd_missing_is_error,
         memory_off_by_default_touches_neither_env_nor_store,
