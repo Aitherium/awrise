@@ -334,14 +334,53 @@ def test_a_detached_child_inside_its_timeout_stays_held(tmp_path):
         child.kill()
 
 
-def test_an_overdue_pid_that_started_after_the_wake_is_never_killed(tmp_path, monkeypatch):
-    # The pid now belongs to a process newer than the wake: a reuse, not the child.
+def test_a_reused_pid_frees_the_lock_and_is_never_killed(tmp_path, monkeypatch):
+    """The pid now belongs to a process newer than the wake: a reuse, not the child.
+
+    #17085: tailscaled took a finished child's pid and the lock read "held" for
+    hours, so the job never fired again. The newcomer survives AND the lock is free.
+    """
     monkeypatch.setattr(lock, "GRACE_S", 0.0)
     child = _sleeper()
     try:
-        _plant_detached(tmp_path, child.pid, timedelta(seconds=600), timeout_s=1)
-        verdict = lock.acquire(tmp_path, "j", _wake("w-next0001"), 1)
-        assert isinstance(verdict, lock.Held) and verdict.overdue
+        path = _plant_detached(tmp_path, child.pid, timedelta(seconds=600), timeout_s=1)
+        assert lock.judge("j", path, 1) == "detached_child_pid_reused"
+        handle = lock.acquire(tmp_path, "j", _wake("w-next0001"), 1)
+        assert isinstance(handle, lock.Lock), handle
         assert child.poll() is None, "a process newer than the wake must survive"
+        handle.release()
+    finally:
+        child.kill()
+
+
+def test_a_reused_pid_inside_the_timeout_also_frees_the_lock(tmp_path):
+    # Reuse is judged by start time, not by the age bound: a long timeout does not hide it.
+    child = _sleeper()
+    try:
+        path = _plant_detached(tmp_path, child.pid, timedelta(seconds=600), timeout_s=86400)
+        assert lock.judge("j", path, 360) == "detached_child_pid_reused"
+        assert child.poll() is None
+    finally:
+        child.kill()
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows process list")
+def test_the_system_list_start_time_matches_the_handle_one():
+    """The no-handle path (another account's process, #17085) reads the same clock."""
+    via_handle = lock._process_started_windows(os.getpid())
+    via_list = lock._process_started_from_system_list(os.getpid())
+    assert via_handle is not None and via_list is not None
+    assert abs(via_handle - via_list) < 1.0, (via_handle, via_list)
+    assert lock._process_started_from_system_list(DEAD_PID) is None
+
+
+def test_an_unreadable_start_time_keeps_a_detached_lock_held(tmp_path, monkeypatch):
+    # Cannot prove a reuse -> never free the lock on a guess.
+    monkeypatch.setattr(lock, "_process_started_epoch", lambda pid: None)
+    child = _sleeper()
+    try:
+        path = _plant_detached(tmp_path, child.pid, timedelta(seconds=600), timeout_s=86400)
+        verdict = lock.judge("j", path, 360)
+        assert isinstance(verdict, lock.Held) and verdict.detached
     finally:
         child.kill()

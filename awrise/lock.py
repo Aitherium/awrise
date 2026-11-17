@@ -296,6 +296,15 @@ def judge(job: str, path: Path, fallback_bound_s: float, settle_s: float = 0.0) 
         # the wake: alive, the lock is held; gone, the lock is stale. Ageing
         # it out instead would start a SECOND copy beside a live one.
         child = _int(holder.get("child_pid"))
+        if child > 0 and is_alive(child) and _pid_reused(child, holder):
+            # The pid is alive but belongs to a process that started AFTER the
+            # wake: the child exited and the OS handed its pid out again.
+            # Measured 2026-11-15 (#17085): agent-tools-refresh's child 6932
+            # exited, tailscaled took pid 6932 six minutes later, and the lock
+            # read "held" for hours -- every pass skipped the job, so the awrise
+            # snapshot it deploys stayed stale. `end_overdue_child` rightly
+            # refuses to kill the newcomer; the lock must still be free.
+            return "detached_child_pid_reused"
         if child > 0 and is_alive(child):
             # Alive: still held. Past the job's own declared ceiling it is OVERDUE --
             # still held here (judging never kills), and `acquire` ends it.
@@ -356,6 +365,23 @@ def _process_started_epoch(pid: int) -> Optional[float]:
         return None
 
 
+def _pid_reused(pid: int, holder: dict) -> bool:
+    """True only when ``pid`` PROVABLY belongs to a process newer than the wake.
+
+    Same rule as ``end_overdue_child``: the process must have started more than a
+    minute after the wake's ``started_at``. An unreadable start time on either side
+    is False -- a lock is never freed on a guess.
+    """
+    try:
+        started = clock.parse_ts(holder.get("started_at"))
+    except (ValueError, TypeError):
+        return False
+    proc_started = _process_started_epoch(pid)
+    if started is None or proc_started is None:
+        return False
+    return proc_started > started.timestamp() + 60.0
+
+
 def _process_started_windows(pid: int) -> Optional[float]:
     import ctypes
     from ctypes import wintypes
@@ -368,7 +394,11 @@ def _process_started_windows(pid: int) -> Optional[float]:
     kernel32.CloseHandle.argtypes = (ctypes.c_void_p,)
     handle = kernel32.OpenProcess(0x1000, 0, pid)
     if not handle:
-        return None
+        # Another account's process (tailscaled, a service) refuses even
+        # PROCESS_QUERY_LIMITED_INFORMATION -- exactly the process that reuses a
+        # finished child's pid (#17085). The system process list carries every
+        # process's CreateTime without a handle.
+        return _process_started_from_system_list(pid)
     try:
         times = [wintypes.FILETIME() for _ in range(4)]
         if not kernel32.GetProcessTimes(handle, *(ctypes.byref(t) for t in times)):
@@ -377,6 +407,63 @@ def _process_started_windows(pid: int) -> Optional[float]:
         return ft / 1e7 - 11644473600.0  # 1601-based 100ns ticks -> unix epoch
     finally:
         kernel32.CloseHandle(handle)
+
+
+#: SYSTEM_PROCESS_INFORMATION field offsets on 64-bit Windows (winternl.h):
+#: CreateTime (LARGE_INTEGER) at 32, UniqueProcessId (HANDLE) at 80.
+_SPI_CREATE_TIME = 32
+_SPI_PID = 80
+
+
+def _process_started_from_system_list(pid: int) -> Optional[float]:
+    """``pid``'s start time from NtQuerySystemInformation(SystemProcessInformation).
+
+    Needs no handle on the process, so it answers for processes of other
+    accounts. None on 32-bit Python, on any API failure, or when the pid is not
+    in the list -- the caller treats None as "cannot prove", never as reuse.
+    """
+    import ctypes
+
+    if ctypes.sizeof(ctypes.c_void_p) != 8:
+        return None
+    try:
+        ntdll = ctypes.WinDLL("ntdll")
+    except OSError:
+        return None
+    ntdll.NtQuerySystemInformation.restype = ctypes.c_long
+    ntdll.NtQuerySystemInformation.argtypes = (
+        ctypes.c_ulong, ctypes.c_void_p, ctypes.c_ulong, ctypes.POINTER(ctypes.c_ulong)
+    )
+    system_process_information = 5
+    status_info_length_mismatch = -1073741820  # 0xC0000004
+    size = 1 << 20
+    for _attempt in range(6):
+        buf = ctypes.create_string_buffer(size)
+        needed = ctypes.c_ulong(0)
+        status = ntdll.NtQuerySystemInformation(
+            system_process_information, buf, size, ctypes.byref(needed)
+        )
+        if status == status_info_length_mismatch:
+            size = max(size * 2, needed.value + (1 << 16))
+            continue
+        if status < 0:
+            return None
+        raw = buf.raw
+        offset = 0
+        while True:
+            if offset + _SPI_PID + 8 > len(raw):
+                return None
+            entry_pid = int.from_bytes(raw[offset + _SPI_PID:offset + _SPI_PID + 8], "little")
+            if entry_pid == pid:
+                ft = int.from_bytes(
+                    raw[offset + _SPI_CREATE_TIME:offset + _SPI_CREATE_TIME + 8], "little"
+                )
+                return ft / 1e7 - 11644473600.0 if ft else None
+            step = int.from_bytes(raw[offset:offset + 4], "little")
+            if step == 0:
+                return None
+            offset += step
+    return None
 
 
 def _kill_tree(pid: int, pgid: Optional[int]) -> None:
@@ -549,16 +636,26 @@ def _take(path: Path, job: str, wake: dict, timeout_s: Optional[float] = None) -
 #: job, so a pass entry there would be reported as a wake for a job nobody
 #: can find.
 PASS_LOCK_NAME = "pass.lock"
+#: The critical lane's pass lock. A separate directory, never ``pass.lock``: the
+#: whole point of the lane is that a normal pass in flight does not refuse it.
+CRITICAL_PASS_LOCK_NAME = "pass-critical.lock"
 #: What the pass lock is called in a message. It is a label, not a path, so
 #: it cannot collide with a job of the same name.
 PASS_LOCK_LABEL = "run-due"
+CRITICAL_PASS_LOCK_LABEL = "run-due-critical"
 
 
-def pass_lock_path(base: Path) -> Path:
-    return base / PASS_LOCK_NAME
+def pass_lock_path(base: Path, lane: str = "normal") -> Path:
+    return base / (CRITICAL_PASS_LOCK_NAME if lane == "critical" else PASS_LOCK_NAME)
 
 
-def acquire_pass(base: Path, wake: dict, timeout_s: Optional[float] = None) -> Union[Lock, Held]:
+def _pass_label(lane: str) -> str:
+    return CRITICAL_PASS_LOCK_LABEL if lane == "critical" else PASS_LOCK_LABEL
+
+
+def acquire_pass(
+    base: Path, wake: dict, timeout_s: Optional[float] = None, lane: str = "normal"
+) -> Union[Lock, Held]:
     """Take the whole-pass lock, or name the pass that already holds it.
 
     Why this is awrise's job and not the scheduler's: every host clock adapter
@@ -571,17 +668,23 @@ def acquire_pass(base: Path, wake: dict, timeout_s: Optional[float] = None) -> U
     can live is here, before the pass looks at a single job.
 
     A refused pass is not a failure. The previous pass is doing the work.
+
+    ``lane`` picks WHICH pass: the critical lane has its own lock, so the
+    normal pass being in flight for 40 minutes does not refuse the one pass
+    that runs the pagers.
     """
     base.mkdir(parents=True, exist_ok=True)
-    return _take(pass_lock_path(base), PASS_LOCK_LABEL, wake, timeout_s)
+    return _take(pass_lock_path(base, lane), _pass_label(lane), wake, timeout_s)
 
 
-def inspect_pass(base: Path, timeout_s: Optional[float] = None) -> Optional[Held]:
+def inspect_pass(
+    base: Path, timeout_s: Optional[float] = None, lane: str = "normal"
+) -> Optional[Held]:
     """``Held`` while a pass is in flight, else None. Never breaks the lock."""
-    path = pass_lock_path(base)
+    path = pass_lock_path(base, lane)
     if not path.exists():
         return None
-    verdict = judge(PASS_LOCK_LABEL, path, float(_int(timeout_s) or DEFAULT_TIMEOUT_S) + GRACE_S)
+    verdict = judge(_pass_label(lane), path, float(_int(timeout_s) or DEFAULT_TIMEOUT_S) + GRACE_S)
     return verdict if isinstance(verdict, Held) else None
 
 

@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Callable, Dict, List, Optional, Tuple
 
 from . import _command_guard as command_guard
-from . import checks, clock, executors, hostclock, ledger, lock, store, why
+from . import checks, clock, executors, hostclock, ledger, lock, procprio, store, why
 from .clock import parse_interval  # noqa: F401  (0.1.0 import path, kept)
 from .executors import Outcome
 
@@ -36,7 +36,7 @@ from .executors import Outcome
 # self-test also scans.
 READS = (
     "enabled", "run", "every", "interval_s", "at", "missed", "report", "predict",
-    "receipt",
+    "receipt", "lane",
 )
 
 Executor = Callable[[dict, dict], Outcome]
@@ -128,6 +128,19 @@ def _validate_spec(
             f"Error: predict must be one of "
             f"{', '.join(store.PREDICT_POLICIES)}, not {job.get('predict')!r}",
         )
+    lane = job.get("lane") or "normal"
+    if lane not in store.LANES:
+        raise FatalError(
+            1, f"Error: lane must be one of {', '.join(store.LANES)}, not {job.get('lane')!r}"
+        )
+    job["lane"] = lane
+    if lane == "critical" and not job.get("detach"):
+        raise FatalError(
+            1, "Error: lane=critical needs detach=true -- the critical pass spawns the wake "
+            "and moves on, so a pager never waits behind another critical wake"
+        )
+    if lane == "critical" and (job.get("wake") or None) is not None:
+        raise FatalError(1, "Error: lane=critical is refused with wake=<unit>")
     kind = job.get("executor") or "shell"
     if kind not in executors.KINDS:
         raise FatalError(
@@ -200,7 +213,7 @@ def _coerce(key: str, raw: str):
     if key == "missed":
         # `catch-up-once` is what an operator types; one spelling is stored.
         return raw.strip().lower().replace("-", "_")
-    if key == "predict":
+    if key in ("predict", "lane"):
         return raw.strip().lower()
     if key == "executor":
         return raw.strip().lower()
@@ -265,6 +278,7 @@ def cmd_add(args) -> int:
     job["at"] = getattr(args, "at", None) or None
     job["enabled"] = not getattr(args, "disabled", False)
     job["detach"] = bool(getattr(args, "detach", False))
+    job["lane"] = (getattr(args, "lane", None) or "normal").strip().lower()
     job["missed"] = _coerce(
         "missed", getattr(args, "missed", None) or str(store.SPEC_DEFAULTS["missed"])
     )
@@ -438,8 +452,40 @@ def cmd_list(args) -> int:
 # ---------------------------------------------------------------- the pass
 
 
-def _recent_rows(base: Path) -> List[dict]:
-    return ledger.read(base, since=timedelta(days=30))
+#: How early a critical job may fire against its own interval: a little more than the
+#: host clock's firing jitter, so a wake is never skipped for being 3 s too young.
+CRITICAL_DUE_SLACK_S = 15.0
+#: The most ledger days a pass ever reads to find open wakes, and the fewest.
+RECENT_DAYS_MAX = 30
+RECENT_DAYS_MIN = 3
+
+
+def _recent_days(jobs: Optional[dict]) -> int:
+    """How many ledger days can still hold a wake that is open.
+
+    A wake is open only until it finishes or its own timeout passes (the next
+    pass closes it as orphaned), so the window is the longest job timeout plus two
+    days of slack, not a flat 30. Measured 2026-11-16: 30 days was 206 MB parsed at
+    the top of EVERY normal pass -- 124 MB read by one pass in 40 minutes at Low I/O
+    -- to find rows written in the last hour.
+    """
+    longest = 0.0
+    for job in (jobs or {}).values():
+        try:
+            longest = max(longest, float(job.get("timeout_s") or 0))
+        except (AttributeError, TypeError, ValueError):
+            continue
+    days = int(longest // 86400) + 1 + 2
+    return max(RECENT_DAYS_MIN, min(RECENT_DAYS_MAX, days))
+
+
+def _recent_rows(base: Path, jobs: Optional[dict] = None) -> List[dict]:
+    if jobs is None:
+        try:
+            jobs = store.load(base)
+        except (store.StoreError, OSError):
+            return ledger.read(base, since=timedelta(days=RECENT_DAYS_MAX))
+    return ledger.read(base, since=timedelta(days=_recent_days(jobs)))
 
 
 def _open_wakes(base: Path) -> dict:
@@ -498,7 +544,7 @@ def reconcile(
     live: List[str] = []
     touched: List[str] = []
     notices: List[Tuple[str, str, Outcome]] = []
-    rows = _recent_rows(base)
+    rows = _recent_rows(base, jobs)
     for wake_id, row in ledger.open_wakes(rows).items():
         marker = ledger.ledger_dir(base) / f"{wake_id}.unrecorded.json"
         # A marker is proof the wake FINISHED and only the row failed, so it is
@@ -597,6 +643,7 @@ def reconcile(
         # spawn), so its own receipt is the verdict. Stamping it here is what moves
         # consecutive_failures: before this the counter only ever changed on attached
         # wakes, and fleet-gates showed "3" from 09-19 for eleven days.
+        deferred = jobs[name].get("last_state") == "skipped_held"
         ledger.append(
             base,
             {
@@ -604,12 +651,16 @@ def reconcile(
                 "invoker": invoker,
                 "job": name,
                 "event": "reconciled",
-                "reason": f"judged_detached_by_receipt_exit_{code}",
+                "reason": (
+                    f"judged_detached_by_receipt_deferred_exit_{code}"
+                    if deferred
+                    else f"judged_detached_by_receipt_exit_{code}"
+                ),
                 "receipt": where,
             },
         )
         touched.append(name)
-        if code != 0:
+        if code != 0 and not deferred:
             wake = jobs[name].get("last_wake_id") or ""
             notices.append((name, wake, Outcome("failure", f"receipt_exit_code_{code}")))
     if touched:
@@ -650,9 +701,24 @@ def _judge_detached_by_receipt(
         if verdict is None:
             continue
         code, where = verdict
+        now_iso = clock.iso(clock.now_utc())
+        deferral = checks._receipt_deferral(job)
+        if deferral is not None:
+            # The job refused ITSELF before doing work (host budget full): a policy
+            # skip, not a failure (issue #17034: three nightly budget refusals read
+            # "failure (unknown)"). It also ends any failure streak: the job judged
+            # itself unable to run, so a stale count and why from earlier nights
+            # must not keep it "failing" on the board (issue #17078).
+            job["last_state"] = "skipped_held"
+            job["last_reason"] = f"deferred: {deferral}"[: why.WHY_CHARS]
+            job["consecutive_failures"] = 0
+            for key in _WHY_CLEARED:
+                job[key] = None
+            job["why_streak"] = 0
+            judged.append((name, code, where))
+            continue
         job["last_state"] = "success" if code == 0 else "failure"
         job["last_reason"] = f"receipt_exit_code_{code}"
-        now_iso = clock.iso(clock.now_utc())
         if code == 0:
             job["consecutive_failures"] = 0
             update_why_state(job, "success", "", "", now_iso)
@@ -2117,7 +2183,9 @@ def _measured_gap_s(base: Path, now) -> Optional[float]:
     return round((now - stamp).total_seconds(), 3)
 
 
-def _tick(base: Path, pass_id: str, invoker: str) -> Tuple[Optional[float], object]:
+def _tick(
+    base: Path, pass_id: str, invoker: str, lane: str = "all"
+) -> Tuple[Optional[float], object]:
     """Open the pass with a ``tick`` row; return (gap since the last tick, now).
 
     The gap is the whole point. A pass that runs says nothing about the pass
@@ -2137,6 +2205,11 @@ def _tick(base: Path, pass_id: str, invoker: str) -> Tuple[Optional[float], obje
         "gap_s": gap,
         "interpreter": sys.executable,
     }
+    if lane != "all":
+        row["lane"] = lane
+    io = procprio.io_priority()
+    if io is not None:
+        row["io_priority"] = io
     if gap is not None and gap < -hostclock.TICK_FUTURE_TOLERANCE_S:
         # A negative gap is not a short one: the previous tick is stamped after
         # this one, so the host clock moved. Recorded as measured AND marked,
@@ -2205,7 +2278,7 @@ def _tick_end(
     ledger.append(base, row)
 
 
-def _pass_bound_s(base: Path) -> float:
+def _pass_bound_s(base: Path, lane: str = "all") -> float:
     """How long a pass may hold the pass lock before it is judged stale.
 
     The SUM of every job's timeout, not the largest: a pass runs its due jobs
@@ -2223,6 +2296,8 @@ def _pass_bound_s(base: Path) -> float:
     total = 0.0
     for job in (jobs or {}).values():
         if not isinstance(job, dict):
+            continue
+        if lane != "all" and (job.get("lane") or "normal") != lane:
             continue
         try:
             total += float(job.get("timeout_s") or 0)
@@ -2242,14 +2317,86 @@ def _draining(executor: Executor) -> Executor:
     return wrapped
 
 
+#: ``run-due --lane``: ``all`` is the historical single pass and stays the default
+#: for a person or a test; the host clock's firing splits it (see ``cmd_run_due``).
+RUN_LANES = ("all", "critical", "normal")
+#: ``--clock-gap`` value that means "the clock's tick has no measurable gap".
+_NO_GAP = "none"
+
+
+def _has_critical_jobs(base: Path) -> bool:
+    try:
+        jobs = store.load(base)
+    except (store.StoreError, OSError):
+        return False
+    return any(
+        isinstance(job, dict) and (job.get("lane") or "normal") == "critical"
+        for job in jobs.values()
+    )
+
+
+def _spawn_normal_lane(base: Path, args, gap: Optional[float]) -> Optional[int]:
+    """Start the normal lane as its own process and return its pid, or None.
+
+    This is what frees the host clock. Task Scheduler runs ONE instance of the
+    awrise task (``MultipleInstances=IgnoreNew``) and the shim waits for it, so a
+    pass that runs 40 minutes inline stops every later firing for 40 minutes --
+    the critical lane included. The firing instead runs the critical pass, hands
+    the normal pass to a detached child (the same spawn a ``detach`` wake gets,
+    which outlives the instance) and exits within seconds, so the clock keeps
+    ticking whatever the normal pass is doing. A spawn that fails returns None
+    and the caller runs the normal pass inline, which is the old behaviour.
+    """
+    argv = [
+        sys.executable, "-m", "awrise", "run-due", "--lane", "normal",
+        "--invoker", getattr(args, "invoker", None) or "manual",
+        "--clock-gap", _NO_GAP if gap is None else repr(float(gap)),
+    ]
+    for flag in ("quiet", "drain"):
+        if getattr(args, flag, False):
+            argv.append(f"--{flag}")
+    if getattr(args, "prune", None):
+        argv += ["--prune", str(args.prune)]
+    logs = base / "logs"
+    try:
+        logs.mkdir(parents=True, exist_ok=True)
+        out = open(logs / hostclock.LOG_NAME, "ab")
+    except OSError:
+        out = None
+    try:
+        proc = subprocess.Popen(
+            argv,
+            stdin=subprocess.DEVNULL,
+            stdout=out if out is not None else subprocess.DEVNULL,
+            stderr=subprocess.STDOUT if out is not None else subprocess.DEVNULL,
+            **executors._spawn_kwargs(True),
+        )
+    except OSError:
+        return None
+    finally:
+        if out is not None:
+            out.close()
+    return proc.pid
+
+
 def cmd_run_due(args, executor: Optional[Executor] = None) -> int:
-    """One pass of the clock: a tick row, every due job, a tick_end row.
+    """One firing of the clock: a tick row, every due job, a tick_end row.
 
     The tick rows are written whatever the pass then does -- including when
     the store turns out to be unreadable -- because they answer a different
     question from the wakes: "is anything waking awrise at all". A host clock
     that fires into a broken store is a very different fault from one that
     stopped firing, and only the ticks tell them apart.
+
+    Two LANES (``lane`` on a job, ``--lane`` here). ``normal`` is the serial
+    pass awrise always had. ``critical`` is the pagers: a pass of their own,
+    under their own lock, so a normal pass that is 40 minutes into a slow
+    inline wake cannot hold one back (measured 2026-11-15: three pager wakes
+    4 to 45 minutes late, passes p99 43 min, every one of them behind the same
+    serial loop). ``--lane all`` runs the critical pass first and then the
+    normal one; with no critical job it is exactly the one historical pass.
+    When a HOST CLOCK fires it, the normal pass runs in a detached child so
+    this process, and the Task Scheduler instance it holds, is done in seconds.
     """
     quiet = getattr(args, "quiet", False)
     invoker = getattr(args, "invoker", None) or "manual"
@@ -2263,14 +2410,72 @@ def cmd_run_due(args, executor: Optional[Executor] = None) -> int:
         # is the claim that the clock fired a real pass, and the gap between two
         # of them is how a missed window is found), no lock, no stamp.
         return _dry_run_pass(base, pass_id, invoker, quiet)
+    lane = getattr(args, "lane", None) or "all"
+    raw_gap = getattr(args, "clock_gap", None)
+    scheduled = invoker in hostclock.SCHEDULED_INVOKERS
+    if scheduled:
+        # Before the first ledger read: Task Scheduler starts the pass at Low I/O
+        # priority, and a pass reading its own ledger at 57 KB/s is a late pager.
+        if lane == "critical" or (lane == "all" and _has_critical_jobs(base)):
+            procprio.apply("critical")
+        elif lane == "normal":
+            procprio.apply("normal")  # a child spawned by a raised parent: back to Low
+    if lane == "critical":
+        return _run_lane(base, args, executor, "critical", pass_id)[0]
+    if lane == "normal":
+        if raw_gap is None:
+            return _run_lane(base, args, executor, "normal", pass_id)[0]
+        # Started by a clock firing that already wrote this minute's tick: the
+        # gap it measured is the clock's, not the 0.3 s since that row.
+        gap = None if raw_gap == _NO_GAP else float(raw_gap)
+        return _run_lane(base, args, executor, "normal", pass_id, tick=False, gap=gap)[0]
+    if not _has_critical_jobs(base):
+        return _run_lane(base, args, executor, "all", pass_id)[0]
+    rc, gap = _run_lane(base, args, executor, "critical", pass_id)
+    if scheduled and not getattr(args, "inline", False):
+        if lock.inspect_pass(base, _pass_bound_s(base, "normal"), lane="normal") is not None:
+            return rc  # a normal pass is in flight; it is the one doing that work
+        if _spawn_normal_lane(base, args, gap) is not None:
+            return rc
+    if scheduled:
+        procprio.apply("normal")  # the inline fallback is normal-lane work: Low again
+    rc_normal, _gap = _run_lane(
+        base, args, executor, "normal", ledger.new_id("p-"), tick=False, gap=gap
+    )
+    return max(rc, rc_normal)
+
+
+def _run_lane(
+    base: Path,
+    args,
+    executor: Executor,
+    lane: str,
+    pass_id: str,
+    tick: bool = True,
+    gap: Optional[float] = None,
+) -> Tuple[int, Optional[float]]:
+    """One lane's pass: tick, pass lock, due jobs, tick_end. Returns (rc, gap).
+
+    ``tick=False`` is a pass whose clock firing already wrote the tick row: the
+    ``gap`` it measured is passed in, and only the ``tick_end`` is written.
+    """
+    quiet = getattr(args, "quiet", False)
+    invoker = getattr(args, "invoker", None) or "manual"
     # The tick is written BEFORE the pass lock is asked for, because the two
     # rows answer different questions. The tick says the HOST CLOCK fired, and
     # it fired whether or not this pass gets to do anything; taking the lock
     # first would make a host whose every wake is refused look exactly like a
     # host whose clock has stopped -- which is what `install --check` reads.
-    gap, pass_started = _tick(base, pass_id, invoker)
+    if tick:
+        gap, pass_started = _tick(base, pass_id, invoker, lane)
+    else:
+        pass_started = clock.now_utc()
+    extra_lane = {} if lane == "all" else {"lane": lane}
     held = lock.acquire_pass(
-        base, {"pass_id": pass_id, "invoker": invoker}, timeout_s=_pass_bound_s(base)
+        base,
+        {"pass_id": pass_id, "invoker": invoker},
+        timeout_s=_pass_bound_s(base, lane),
+        lane="critical" if lane == "critical" else "normal",
     )
     if isinstance(held, lock.Held):
         # Refused, never queued: the previous pass is still doing the work, and
@@ -2284,21 +2489,30 @@ def cmd_run_due(args, executor: Optional[Executor] = None) -> int:
             pass_started,
             new_counts(),
             reason="pass_refused_overlap",
-            extra={"refused": held.reason},
+            extra={"refused": held.reason, **extra_lane},
         )
         if not quiet:
             print(f"refused: a run-due pass is already in flight ({held.reason})", file=sys.stderr)
-        return 0
+        return 0, gap
     state: dict = {"jobs": {}, "counts": new_counts(), "gap": gap}
     try:
-        return _run_due_pass(base, pass_id, invoker, executor, quiet, state)
+        return _run_due_pass(base, pass_id, invoker, executor, quiet, state, lane), gap
     finally:
         # Released FIRST: a `_tick_end` that raises must not leave the lock
         # held, or one bad ledger write stops every later pass on the host.
         held.release()
-        _tick_end(base, state["jobs"], pass_id, invoker, gap, pass_started, state["counts"])
+        _tick_end(
+            base,
+            state["jobs"],
+            pass_id,
+            invoker,
+            gap,
+            pass_started,
+            state["counts"],
+            extra=extra_lane or None,
+        )
         keep = getattr(args, "prune", None)
-        if keep:
+        if keep and lane != "critical":
             try:
                 removed, _spared = prune_ledger(base, keep)
             except (ValueError, OSError) as exc:
@@ -2309,10 +2523,23 @@ def cmd_run_due(args, executor: Optional[Executor] = None) -> int:
 
 
 def _run_due_pass(
-    base: Path, pass_id: str, invoker: str, executor: Executor, quiet: bool, state: dict
+    base: Path,
+    pass_id: str,
+    invoker: str,
+    executor: Executor,
+    quiet: bool,
+    state: dict,
+    lane: str = "all",
 ) -> int:
     jobs = state["jobs"] = store.load(base)
-    jobs, closed, _live = reconcile(base, jobs, pass_id, invoker)
+    if lane == "critical":
+        # Only the normal pass reconciles orphans and sweeps stale locks: the
+        # critical pass is a per-minute dispatch that must stay cheap. A stale
+        # critical job lock is judged (and broken) by the job's own
+        # `lock.acquire` in `_execute`.
+        closed: list = []
+    else:
+        jobs, closed, _live = reconcile(base, jobs, pass_id, invoker)
     state["jobs"] = jobs
     worst = 1 if closed else 0
     if closed and not quiet:
@@ -2328,7 +2555,15 @@ def _run_due_pass(
     # job dispatched below (see `_execute`): a degraded `awm` store can cost
     # this pass at most one `MEMORY_TIMEOUT_S`, never one per job.
     memory_deadline = time.monotonic() + MEMORY_TIMEOUT_S
+    # A pager on the same period as the clock (a 60 s wake, a 60 s clock) is stamped a
+    # second or two AFTER its firing, so the next firing -- a few seconds early, the
+    # scheduler jitters +-6 s -- finds it not yet due and the wake runs every OTHER
+    # minute. Measured 2026-11-16: the 60 s incident reflex started every 120 s.
+    due_now = now + timedelta(seconds=CRITICAL_DUE_SLACK_S) if lane == "critical" else now
     for name in sorted(jobs):
+        if lane != "all" and jobs.get(name) is not None:
+            if (jobs[name].get("lane") or "normal") != lane:
+                continue  # the other lane's job: that pass dispatches it
         if jobs.get(name) is not None:
             # An answered card is applied BEFORE dueness is judged, so a job
             # the owner disabled on the card does not get one more wake first.
@@ -2353,7 +2588,7 @@ def _run_due_pass(
             job = jobs.get(name)
             if job is None:
                 continue
-        elif not clock.is_due(job, now):
+        elif not clock.is_due(job, due_now):
             continue
         if not job.get("enabled", True):
             jobs = state["jobs"] = _skip(
@@ -3403,7 +3638,7 @@ def cmd_status(args) -> int:
         verdict = checks._receipt_verdict(job)
         if verdict is None:
             blind.append(name)
-        elif verdict[0] != 0:
+        elif verdict[0] != 0 and checks._receipt_deferral(job) is None:
             bad.append(f"{name} (detached; receipt exit_code={verdict[0]})")
     stale = [w for w, row in opens.items() if not _wake_is_live(row)]
     if stale:
@@ -4418,6 +4653,13 @@ def _build_parser() -> argparse.ArgumentParser:
         help="spawn and close the wake at once; the child outlives the pass",
     )
     add_p.add_argument(
+        "--lane",
+        default=None,
+        choices=list(store.LANES),
+        help="critical = the pager lane: its own pass and lock, run first on every "
+        "host-clock firing, never queued behind slow normal wakes (needs --detach)",
+    )
+    add_p.add_argument(
         "--missed",
         default=None,
         choices=list(store.MISSED_POLICIES),
@@ -4521,6 +4763,22 @@ def _build_parser() -> argparse.ArgumentParser:
         help="awrun jobs only: after submitting, also claim and run THAT "
         "item -- never another actor's queued work",
     )
+    run_p.add_argument(
+        "--lane",
+        default="all",
+        choices=list(RUN_LANES),
+        help="which pass: critical = the pager jobs only (own lock, never queued "
+        "behind slow wakes), normal = everything else, all = critical then normal "
+        "(default). A host-clock firing runs critical and hands normal to a "
+        "detached child",
+    )
+    run_p.add_argument(
+        "--inline",
+        action="store_true",
+        help="with --lane all: run the normal pass in this process even when a "
+        "host clock fired it",
+    )
+    run_p.add_argument("--clock-gap", dest="clock_gap", default=None, help=argparse.SUPPRESS)
     run_p.set_defaults(func=cmd_run_due)
 
     one_p = subs.add_parser("run", help="run one job now, due or not")

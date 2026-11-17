@@ -194,7 +194,18 @@ def hold_seconds(streak: int, period_s: float) -> float:
 
 
 #: Receipt keys that carry a human reason, most specific first.
-_RECEIPT_TEXT_KEYS = ("error", "why", "message", "detail", "reason", "stderr_tail", "output_tail")
+#: ``skipped``: a job that refused itself (terminal_rsi_cycle's host-budget refusal,
+#: issue #17034) put its reason there, and the why read "receipt exit_code 2".
+_RECEIPT_TEXT_KEYS = (
+    "error",
+    "why",
+    "message",
+    "detail",
+    "reason",
+    "skipped",
+    "stderr_tail",
+    "output_tail",
+)
 _RECEIPT_LIST_KEYS = ("errors", "warnings", "notes")
 _RECEIPT_LOG_KEYS = ("log", "log_path", "logfile")
 

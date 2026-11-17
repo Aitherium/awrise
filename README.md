@@ -73,7 +73,7 @@ hand-run passes reads as a clock that has never fired, which is what it is.
 | `enable --name N` / `disable --name N` | a disabled job that comes due writes `skipped_disabled`, never silence |
 | `remove --name N` | forget the job (refused while a wake of it is in flight) |
 | `list [--json]` | the jobs, with the interval exactly as entered, the next due time, and the windows missed |
-| `run-due [--quiet] [--dry-run] [--prune 30d]` | one pass: reconcile, tick, run every due job, exit |
+| `run-due [--quiet] [--dry-run] [--prune 30d] [--lane critical\|normal\|all]` | one pass: reconcile, tick, run every due job, exit. A host-clock firing runs the `critical` lane and hands the `normal` lane to a detached child, so the clock is free next minute |
 | `run --name N [--force]` | run one job now, due or not |
 | `history [--job N] [--since 7d] [--event E] [--json] [--judge]` | the ledger; `--judge` turns it into a verdict (drift or absence) and exits 2 on a window too young to judge |
 | `status` | per-job verdict and the host-clock line; a failing job shows its `why` (its own last error line) and `cause` bucket, a held one `held: <dependency>`; exit 1 on a failing or held job |
@@ -102,6 +102,7 @@ Every command exits **0 clean, 1 a measured no, 2 could not judge** -- never 0 o
 | `at` | none | `HH:MM` UTC daily anchor: due is the next anchor after the last start — or, until it has ever run, after it was added — so a job added at 14:00 waits for 03:00 and a laptop asleep at 07:00 catches up once and re-anchors instead of walking later every day |
 | `missed` | `catch_up_once` | windows lost while nothing ran: catch up exactly once, or `skip` them |
 | `detach` | `false` | spawn and close the wake at once; the child outlives the pass, and keeps the job's lock until it exits — so the overlap rule below holds for it too |
+| `lane` | `normal` | `critical` is for wakes that page: a pass of its own under its own lock (`pass-critical.lock`), run first on every clock firing, so no slow normal wake can delay it. Needs `detach`, refused with `wake` |
 | `enabled` | `true` | a disabled job still leaves a row when it comes due |
 | `executor` | `shell` | `python`, `http`, `awrun`, `agent` and `session` are optional, and import nothing until a job names them |
 | `wake` | none | a unit to wake before the job runs and wait for; the wake is measured and recorded (`--wake my-model.service`) |
@@ -340,6 +341,9 @@ list below is the output of `awrise --self-test --list` and must stay equal to i
 - `card_raised_after_n_failures`
 - `status_judges_a_detached_wake_by_its_receipt`
 - `reconcile_stamps_a_detached_wake_from_its_receipt`
+- `a_running_detached_child_is_not_judged_by_its_receipt`
+- `a_deferred_receipt_is_a_policy_skip_not_a_failure`
+- `a_deferral_ends_a_stale_failure_streak`
 - `report_block_validated_at_add`
 - `cwd_missing_is_error`
 - `memory_off_by_default_touches_neither_env_nor_store`

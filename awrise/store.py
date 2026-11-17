@@ -129,6 +129,10 @@ SPEC_DEFAULTS: Dict[str, object] = {
     "park_after": False,
     "wake_required": True,
     "predict": "off",
+    # Which pass dispatches this job. ``critical`` is the pager lane: its own
+    # pass lock and its own pass, run first on every host-clock firing and
+    # never queued behind the normal lane's inline work (see LANES).
+    "lane": "normal",
     # Where this job's CHILD writes its own verdict. A detached wake closes the
     # pass at spawn, so the ledger row is `state: detached, exit_code: null`
     # forever -- it cannot tell a run that exited 0 from one that exited 1.
@@ -163,6 +167,15 @@ MISSED_POLICIES = ("catch_up_once", "skip")
 #: regardless of what the new prediction says, so a job can never be
 #: skipped twice in a row on a prediction alone.
 PREDICT_POLICIES = ("off", "warn", "skip")
+#: The passes a job can belong to. ``normal`` is every job awrise ever had: one
+#: serial pass, so one slow inline wake delays everything after it -- measured
+#: 2026-11-15, 853 passes in 2.5 days with a p99 of 43 minutes, every pager wake
+#: late by that much. ``critical`` is for the wakes that PAGE: a separate pass
+#: with its own lock that only dispatches critical jobs, so no normal wake, however
+#: slow, can hold one back. A critical job must be ``detach`` (the pass spawns it
+#: and moves on, so no critical wake waits behind another) and must not wake a
+#: unit first (that wait would be the pass's time).
+LANES = ("normal", "critical")
 #: Keys ``set`` accepts (``interval_s`` is derived from ``every``). The dotted
 #: ones address one field inside ``report``.
 SETTABLE = (
@@ -182,6 +195,7 @@ SETTABLE = (
     "park_after",
     "wake_required",
     "predict",
+    "lane",
     "report.relay",
     "report.on",
     "report.card_after",
@@ -777,6 +791,21 @@ def validate_record(name: str, job: object) -> dict:
         raise bad("missed", f"must be one of {', '.join(MISSED_POLICIES)}")
     if full["predict"] not in PREDICT_POLICIES:
         raise bad("predict", f"must be one of {', '.join(PREDICT_POLICIES)}")
+    if full["lane"] not in LANES:
+        raise bad("lane", f"must be one of {', '.join(LANES)}")
+    if full["lane"] == "critical":
+        if not full["detach"]:
+            raise bad(
+                "lane",
+                "critical needs detach=true: the critical pass spawns the wake and "
+                "moves on, so a pager never waits behind another critical wake",
+            )
+        if full["wake"] is not None:
+            raise bad(
+                "lane",
+                "critical is refused with wake=<unit>: waking a unit first is time "
+                "the critical pass would spend before the next pager",
+            )
     if full["executor"] not in executors.KINDS:
         raise bad("executor", f"must be one of {', '.join(executors.KINDS)}")
     problem = executors.bearer_path_problem(full["bearer_file"])
@@ -1140,12 +1169,28 @@ def _copy(src: Path, dst: Path) -> None:
         raise
 
 
+def _wire(jobs: Jobs) -> Jobs:
+    """The jobs as written to disk: a ``normal`` lane is the default and is NOT written.
+
+    A store is read by every awrise on the host, and an older one refuses a key it
+    does not know. Writing ``lane: normal`` into all 104 records on 2026-11-16 made the
+    pass that was still running the old code exit 2 ("unknown key(s) ['lane']") at the
+    end of its pass; only a job that is actually ``critical`` needs the new key.
+    """
+    out: Jobs = {}
+    for name, job in jobs.items():
+        if isinstance(job, dict) and job.get("lane") == "normal":
+            job = {key: value for key, value in job.items() if key != "lane"}
+        out[name] = job
+    return out
+
+
 def save(jobs: Jobs, base: Optional[Path] = None) -> None:
     """tmp + fsync + os.replace; the previous file becomes ``.bak`` first."""
     base = base or home()
     path = store_path(base)
     bak = base / f"{STORE_NAME}.bak"
-    payload = json.dumps({"schema": SCHEMA, "jobs": jobs}, indent=2, sort_keys=True) + "\n"
+    payload = json.dumps({"schema": SCHEMA, "jobs": _wire(jobs)}, indent=2, sort_keys=True) + "\n"
     tmp = base / f"{STORE_NAME}.tmp-{os.getpid()}"
     try:
         with open(tmp, "w", encoding="utf-8", newline="\n") as fh:

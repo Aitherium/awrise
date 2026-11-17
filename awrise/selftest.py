@@ -2380,7 +2380,10 @@ def a_running_detached_child_is_not_judged_by_its_receipt() -> None:
             "wake_id": store.load(base)["d"].get("last_wake_id") or "w-live",
             "pass_id": "p-gone", "job": "d", "pass_pid": 0,
             "child_pid": os.getpid(), "child_pgid": None, "detached": True,
-            "started_at": store.load(base)["d"]["last_started_at"], "timeout_s": None,
+            # the child (this process) started no earlier than its wake, as a real
+            # child does: a wake dated before its child's start is a REUSED pid and
+            # frees the lock (#17085), which is not what this case is about
+            "started_at": clock.iso(clock.now_utc()), "timeout_s": None,
         }
         (held / lock.HOLDER_FILE).write_text(json.dumps(holder), encoding="utf-8")
         cli.reconcile(base, store.load(base), "p-selftest", "selftest")
@@ -2395,6 +2398,76 @@ def a_running_detached_child_is_not_judged_by_its_receipt() -> None:
         cli.reconcile(base, store.load(base), "p-selftest-2", "selftest")
         job = store.load(base)["d"]
         assert job["last_state"] == "failure" and job["consecutive_failures"] == 1, job
+
+
+def a_deferred_receipt_is_a_policy_skip_not_a_failure() -> None:
+    """Issue #17034: terminal-rsi-cycle refused itself on the host memory budget
+    (`exit_code: 2`, reason under `skipped`) and read "failure (unknown): receipt
+    exit_code 2" three nights running. `deferred: true` is a skip, with its reason."""
+    reason = "host budget: deferred after 1804 s: commit 96.9% (limit 85%)"
+    status = lambda: cli.cmd_status(argparse.Namespace())  # noqa: E731
+    with _home() as base:
+        receipt = _detached_job(base, None, fails=0)
+        receipt.write_text(
+            json.dumps({"exit_code": 2, "deferred": True, "reason": reason}), encoding="utf-8"
+        )
+        assert checks._receipt_deferral(store.load(base)["d"]) == reason
+        wl006 = checks.wl006_a_detached_wake_is_not_a_verdict(
+            rows=[], jobs=store.load(base), base=base
+        )
+        assert wl006.code != checks.VIOLATION, (wl006.summary, wl006.details)
+        assert status() == 0, "a deferred receipt printed NOT OK"
+        cli.reconcile(base, store.load(base), "p-selftest", "selftest")
+        job = store.load(base)["d"]
+        assert job["last_state"] == "skipped_held" and job["consecutive_failures"] == 0, job
+        assert job["last_reason"].startswith("deferred: host budget"), job["last_reason"]
+        rows = [r for r in ledger.read(base) if r.get("event") == "reconciled"]
+        assert any(
+            r.get("reason") == "judged_detached_by_receipt_deferred_exit_2" for r in rows
+        ), rows
+    # negative twin: the same receipt WITHOUT `deferred` is still a failure, and its
+    # `skipped` text is now the why instead of the bare exit code
+    with _home() as base:
+        receipt = _detached_job(base, None, fails=0)
+        receipt.write_text(json.dumps({"exit_code": 2, "skipped": reason}), encoding="utf-8")
+        assert checks._receipt_deferral(store.load(base)["d"]) is None
+        assert why.receipt_why(str(receipt), 2)[0] == reason
+        cli.reconcile(base, store.load(base), "p-selftest", "selftest")
+        job = store.load(base)["d"]
+        assert job["last_state"] == "failure" and job["consecutive_failures"] == 1, job
+
+
+def a_deferral_ends_a_stale_failure_streak() -> None:
+    """Issue #17078: three pre-fix nights left terminal-rsi-cycle at
+    consecutive_failures 3 / why_streak 3; a later deferral left them standing, so
+    the board kept it "failing". A deferral resets the counter and the why fields."""
+    reason = "host budget: deferred after 1804 s: commit 96.9% (limit 85%)"
+    stale = {"last_why": "receipt exit_code 2", "last_cause": "unknown",
+             "why_since": "2026-11-11T20:03:00Z", "why_streak": 3}
+    with _home() as base:
+        receipt = _detached_job(base, None, fails=3)
+        jobs = store.load(base)
+        jobs["d"].update(stale)
+        store.save(jobs, base)
+        receipt.write_text(
+            json.dumps({"exit_code": 2, "deferred": True, "reason": reason}), encoding="utf-8"
+        )
+        cli.reconcile(base, store.load(base), "p-selftest", "selftest")
+        job = store.load(base)["d"]
+        assert job["last_state"] == "skipped_held", job
+        assert job["consecutive_failures"] == 0 and job["why_streak"] == 0, job
+        assert all(job.get(k) is None for k in cli._WHY_CLEARED), job
+    # negative twin: the same stale streak and a NON-deferred exit 2 grows to 4
+    with _home() as base:
+        receipt = _detached_job(base, None, fails=3)
+        jobs = store.load(base)
+        jobs["d"].update(stale)
+        store.save(jobs, base)
+        receipt.write_text(json.dumps({"exit_code": 2, "skipped": reason}), encoding="utf-8")
+        cli.reconcile(base, store.load(base), "p-selftest", "selftest")
+        job = store.load(base)["d"]
+        assert job["last_state"] == "failure" and job["consecutive_failures"] == 4, job
+        assert job["last_why"], job
 
 
 def report_block_validated_at_add() -> None:
@@ -3086,6 +3159,8 @@ CASES: List[Tuple[str, Callable[[], None]]] = [
         status_judges_a_detached_wake_by_its_receipt,
         reconcile_stamps_a_detached_wake_from_its_receipt,
         a_running_detached_child_is_not_judged_by_its_receipt,
+        a_deferred_receipt_is_a_policy_skip_not_a_failure,
+        a_deferral_ends_a_stale_failure_streak,
         report_block_validated_at_add,
         cwd_missing_is_error,
         memory_off_by_default_touches_neither_env_nor_store,

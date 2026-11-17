@@ -376,6 +376,36 @@ def _receipt_verdict(job: dict) -> Optional[tuple]:
     return code, str(p)
 
 
+def _receipt_deferral(job: dict) -> Optional[str]:
+    """The reason a detached job DEFERRED itself, or ``None`` when it did not.
+
+    A receipt with ``"deferred": true`` says the job ran, asked for a resource
+    (the host memory budget) and was refused BEFORE doing any work. That is a
+    policy skip the job made on its own, not a failure: counting it as one is how
+    terminal-rsi-cycle read "failure (unknown): receipt exit_code 2" three nights
+    running while the host was simply full (issue #17034). Only a receipt that
+    :func:`_receipt_verdict` accepts as fresh can defer, so a stale deferral never
+    excuses a later failure. The reason is ``reason`` (else ``skipped``), never empty.
+    """
+    if _receipt_verdict(job) is None:
+        return None
+    try:
+        data = json.loads(
+            Path(os.path.expanduser(str(job.get("receipt")))).read_text(
+                encoding="utf-8", errors="replace"
+            )
+        )
+    except (OSError, ValueError):
+        return None
+    if not isinstance(data, dict) or data.get("deferred") is not True:
+        return None
+    for key in ("reason", "skipped"):
+        text = data.get(key)
+        if isinstance(text, str) and text.strip():
+            return " ".join(text.split())
+    return "deferred (no reason given)"
+
+
 def _wake_in_flight(base: Optional[Path], name: str, job: dict) -> bool:
     """True while a live holder (the detached child) still holds ``name``'s lock.
 
@@ -429,7 +459,10 @@ def wl006_a_detached_wake_is_not_a_verdict(
         verdict = _receipt_verdict(job)
         if verdict is not None:
             code, where = verdict
-            if code == 0:
+            deferral = _receipt_deferral(job)
+            if deferral is not None:
+                judged.append(f"{name}: receipt says deferred: {deferral} ({where})")
+            elif code == 0:
                 judged.append(f"{name}: receipt says exit_code=0 ({where})")
             else:
                 failed.append(f"{name}: receipt says exit_code={code} ({where})")

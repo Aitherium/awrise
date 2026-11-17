@@ -690,8 +690,12 @@ def boot_entry_gap_line(ctx: Context, detail: str) -> str:
 #: on schedule -- and never starts. ``MultipleInstances`` is restated because a
 #: settings set replaces the lot, and IgnoreNew is the property that makes an
 #: overlapping wake REFUSED rather than queued.
+#: ``-Priority 4`` (normal CPU AND normal I/O) is restated for the same reason and is
+#: measured: Task Scheduler's default 7 starts every pass at LOW I/O, and on 2026-11-16 a
+#: run-due process took up to 60 s just to import (and a pass read its ledger at 57 KB/s)
+#: while the host did other I/O, so the clock skipped minutes and pagers were late.
 _BATTERY_PS = (
-    "$s = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew "
+    "$s = New-ScheduledTaskSettingsSet -MultipleInstances IgnoreNew -Priority 4 "
     "-AllowStartIfOnBatteries -DontStopIfGoingOnBatteries; "
     "Set-ScheduledTask -TaskName '{name}' -Settings $s | Out-Null"
 )
@@ -1466,15 +1470,31 @@ def last_tick(base: Path, invokers: Optional[frozenset] = None) -> Optional[dict
     ``SCHEDULED_INVOKERS`` is the one that answers "is the host clock running",
     because a pass somebody ran by hand writes exactly the same row.
     """
-    rows = ledger.read(base, since=timedelta(days=2))
-    ticks = [
-        row
-        for row in rows
-        if row.get("event") == "tick"
-        and row.get("ts")
-        and (invokers is None or row.get("invoker") in invokers)
-    ]
-    return ticks[-1] if ticks else None
+    # Newest day file first, newest line first, and only lines that can be a tick are
+    # parsed: this runs at the top of EVERY firing (the gap), and parsing two days of
+    # ledger (14 MB on this host) to find a row written a minute ago is how a pager
+    # waits on its own bookkeeping.
+    for path in reversed(ledger.files(base, timedelta(days=2))):
+        try:
+            text = path.read_text(encoding="utf-8", errors="replace")
+        except OSError:
+            continue
+        for line in reversed(text.splitlines()):
+            if '"event": "tick"' not in line:
+                continue
+            try:
+                row = json.loads(line)
+            except ValueError:
+                continue
+            if (
+                isinstance(row, dict)
+                and row.get("event") == "tick"
+                and isinstance(row.get("ts"), str)
+                and row.get("ts")
+                and (invokers is None or row.get("invoker") in invokers)
+            ):
+                return row
+    return None
 
 
 def tick_age_s(base: Path, invokers: Optional[frozenset] = None) -> Optional[float]:
