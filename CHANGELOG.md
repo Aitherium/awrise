@@ -2,6 +2,12 @@
 
 All notable changes to `awrise` are recorded here.
 
+## [Unreleased]
+
+### Fixed
+
+- **awrise**: on Windows a shell job whose `run` starts with a bare `bash` now runs Git Bash by absolute path (`AWRISE_GIT_BASH`, then the Git install roots, then the `git` on PATH). cmd.exe resolved that word to `System32\bash.exe` -- WSL's default distro -- which cannot open a `C:/...` script and boots a second distro beside the fleet (issue #17561: `dgx-crash-capture` failed x10 with `/bin/bash: C:/...: No such file or directory`). With no Git Bash the wake is an `error` (`wsl_bash_refused:`), never a WSL spawn. A job that means WSL says `wsl -d <distro> ...`, which is untouched.
+
 ## [0.6.1] - 2026-11-16
 
 ### Fixed

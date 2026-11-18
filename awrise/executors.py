@@ -247,10 +247,75 @@ def _run_process(
     )
 
 
+#: A ``run`` that STARTS with a bare ``bash`` (or ``bash.exe``, quoted or not).
+#: On Windows a shell job goes to cmd.exe, which resolves that word on the
+#: Windows PATH -- and when Git's ``bin`` is not on it (the Git installer only
+#: adds ``Git\cmd``), the hit is ``System32\bash.exe``: WSL's DEFAULT distro.
+#: That Linux shell cannot open a ``C:/...`` script ("/bin/bash: ...: No such
+#: file or directory" whether or not the file exists -- issue #17561) and it
+#: boots a second distro next to the fleet, which the co-tenancy rule forbids.
+_BARE_BASH_RE = re.compile(r'^(?:"bash(?:\.exe)?"|bash(?:\.exe)?)(?=\s|$)', re.IGNORECASE)
+
+#: Absolute path to the Git Bash ``bash.exe`` to use; overrides the search.
+GIT_BASH_ENV = "AWRISE_GIT_BASH"
+
+
+def git_bash() -> Optional[str]:
+    """Absolute path of Git for Windows' ``bash.exe``, or ``None``.
+
+    ``AWRISE_GIT_BASH`` wins when it names a file; otherwise the standard
+    install roots, then the ``git`` on PATH (``<root>\\cmd\\git.exe`` ->
+    ``<root>\\bin\\bash.exe``). Never ``System32\\bash.exe``.
+    """
+    override = os.environ.get(GIT_BASH_ENV)
+    if override:
+        return override if Path(override).is_file() else None
+    candidates: List[Path] = []
+    for var in ("ProgramW6432", "ProgramFiles", "ProgramFiles(x86)"):
+        root = os.environ.get(var)
+        if root:
+            candidates.append(Path(root) / "Git" / "bin" / "bash.exe")
+    local = os.environ.get("LOCALAPPDATA")
+    if local:
+        candidates.append(Path(local) / "Programs" / "Git" / "bin" / "bash.exe")
+    git = shutil.which("git")
+    if git:
+        candidates.append(Path(git).resolve().parent.parent / "bin" / "bash.exe")
+    for candidate in candidates:
+        if candidate.is_file():
+            return str(candidate)
+    return None
+
+
+def resolve_windows_bash(command: str) -> Tuple[str, Optional[str]]:
+    """Point a leading bare ``bash`` at Git Bash by absolute path.
+
+    Returns ``(command, None)`` -- rewritten when it started with a bare
+    ``bash``, untouched otherwise -- or ``(command, reason)`` when it did and
+    no Git Bash exists: refusing is better than starting WSL's default distro
+    for a command that was written for Git Bash. A job that really means WSL
+    names it (``wsl -d <distro> ...``), which this never touches.
+    """
+    match = _BARE_BASH_RE.match(command)
+    if not match:
+        return command, None
+    bash = git_bash()
+    if not bash:
+        return command, (
+            "wsl_bash_refused: a bare 'bash' here is System32\\bash.exe (WSL's default "
+            f"distro); install Git for Windows or set {GIT_BASH_ENV}"
+        )
+    return f'"{bash}"{command[match.end():]}', None
+
+
 def run_shell(job: dict, wake: dict) -> Outcome:
     command = (job.get("run") or "").strip()
     if not command:
         return Outcome("skipped_empty", "empty_command")
+    if sys.platform == "win32":
+        command, problem = resolve_windows_bash(command)
+        if problem:
+            return Outcome("error", problem)
     return _run_process(job, wake, command, shell=True)
 
 

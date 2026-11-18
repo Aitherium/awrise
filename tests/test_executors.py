@@ -710,3 +710,74 @@ def test_an_unreachable_daemon_is_an_error_not_a_failure(home, monkeypatch):
     monkeypatch.setenv(executors.SESSION_URL_ENV, "http://127.0.0.1:1")
     out = executors.run_session(job(run="hi", timeout_s=5, bearer_file=str(_token(home))), wake())
     assert out.state == "error" and out.reason.startswith("daemon_unreachable:"), out.reason
+
+
+# ------------------------------------------------- windows bare bash (#17561)
+
+
+@pytest.fixture
+def fake_git_bash(tmp_path, monkeypatch) -> Path:
+    exe = tmp_path / "Git" / "bin" / "bash.exe"
+    exe.parent.mkdir(parents=True)
+    exe.write_bytes(b"")
+    monkeypatch.setenv(executors.GIT_BASH_ENV, str(exe))
+    return exe
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        "bash C:/Users/x/.aither/bin/dgx-crash-capture.sh",
+        "BASH.EXE -lc 'echo hi'",
+        '"bash" C:/x.sh',
+        "bash",
+    ],
+)
+def test_a_bare_bash_is_pointed_at_git_bash(fake_git_bash, run):
+    command, problem = executors.resolve_windows_bash(run)
+    assert problem is None
+    assert command.startswith(f'"{fake_git_bash}"'), command
+    assert command.endswith(run.split(None, 1)[1] if " " in run else f'"{fake_git_bash}"')
+
+
+@pytest.mark.parametrize(
+    "run",
+    [
+        '"C:\\Program Files\\Git\\bin\\bash.exe" C:/x.sh',
+        "wsl -d awnix -u root bash -lc 'echo hi'",
+        "bashful --help",
+        "python -c \"print('bash')\"",
+    ],
+)
+def test_a_command_that_is_not_a_bare_bash_is_untouched(fake_git_bash, run):
+    assert executors.resolve_windows_bash(run) == (run, None)
+
+
+def test_a_bare_bash_with_no_git_bash_is_refused_not_sent_to_wsl(tmp_path, monkeypatch):
+    monkeypatch.setenv(executors.GIT_BASH_ENV, str(tmp_path / "absent" / "bash.exe"))
+    command, problem = executors.resolve_windows_bash("bash C:/x.sh")
+    assert command == "bash C:/x.sh"
+    assert problem and problem.startswith("wsl_bash_refused:")
+
+
+def test_run_shell_refuses_wsl_bash_on_windows_before_spawning(tmp_path, monkeypatch):
+    monkeypatch.setattr(executors.sys, "platform", "win32")
+    monkeypatch.setenv(executors.GIT_BASH_ENV, str(tmp_path / "absent" / "bash.exe"))
+
+    def boom(*_a, **_k):
+        raise AssertionError("spawned a process for a refused command")
+
+    monkeypatch.setattr(executors, "_run_process", boom)
+    out = executors.run_shell(job(run="bash C:/x.sh"), wake())
+    assert out.state == "error" and out.reason.startswith("wsl_bash_refused:")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Git Bash is a Windows path")
+def test_run_shell_runs_a_bare_bash_script_through_git_bash(tmp_path):
+    if executors.git_bash() is None:
+        pytest.fail("no Git Bash on this Windows host; the fix has nothing to resolve to")
+    script = tmp_path / "probe.sh"
+    script.write_text('echo "shell=$BASH"\n', encoding="utf-8", newline="\n")
+    out = executors.run_shell(job(run=f"bash {script.as_posix()}", timeout_s=60), wake())
+    assert out.state == "success", (out.reason, out.stderr_tail)
+    assert "shell=/usr/bin/bash" in out.stdout_tail, out.stdout_tail
