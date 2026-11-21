@@ -74,7 +74,7 @@ hand-run passes reads as a clock that has never fired, which is what it is.
 | `remove --name N` | forget the job (refused while a wake of it is in flight) |
 | `list [--json]` | the jobs, with the interval exactly as entered, the next due time, and the windows missed |
 | `run-due [--quiet] [--dry-run] [--prune 30d] [--lane critical\|normal\|all]` | one pass: reconcile, tick, run every due job, exit. A host-clock firing runs the `critical` lane and hands the `normal` lane to a detached child, so the clock is free next minute |
-| `run --name N [--force]` | run one job now, due or not |
+| `run --name N [--force]` | run one job now, due or not; the job is named with `--name` (a bare `awrise run N` is a usage error, exit 2) |
 | `history [--job N] [--since 7d] [--event E] [--json] [--judge]` | the ledger; `--judge` turns it into a verdict (drift or absence) and exits 2 on a window too young to judge |
 | `status` | per-job verdict and the host-clock line; a failing job shows its `why` (its own last error line) and `cause` bucket, a held one `held: <dependency>`; exit 1 on a failing or held job |
 | `explain --name N` | why that job did or did not fire on the last tick, plus the last bad wake's why, cause, streak, hold and output tail |
