@@ -2874,6 +2874,51 @@ def import_routine_translates_a_shaped_yaml_and_writes_nothing_without_apply() -
             assert "not carried over" in out.getvalue(), "the dropped jitter must be NAMED"
 
 
+_HOST_ONLY_YAML = """
+routines:
+  - id: eval_drain
+    _meta:
+      host_only: true
+    schedule:
+      type: interval
+      interval_minutes: 5
+    action:
+      type: shell_command
+      command: python AitherOS/dev/tools/awrun_eval_worker.py --once
+      timeout_seconds: 240
+"""
+
+
+def import_routine_host_only_without_cwd_defaults_to_its_repo_root() -> None:
+    # 2026-11-23: a host-only routine imported with cwd None ran its repo-relative
+    # command from the clock's cwd and died silently every pass.
+    with _home() as base:
+        with tempfile.TemporaryDirectory(prefix="awrise-selftest-hostcwd-") as tmp:
+            repo = Path(tmp) / "repo"
+            (repo / ".git").mkdir(parents=True)
+            (repo / "cfg").mkdir()
+            path = repo / "cfg" / "eval.yaml"
+            path.write_text(_HOST_ONLY_YAML, encoding="utf-8")
+            rc = cli._dispatch(
+                cli.cmd_import_routine,
+                _import_routine_args(path, apply=True, i_am_the_runner=True),
+            )
+            assert rc == 0
+            job = store.load(base)["routine-eval_drain"]
+            assert job["cwd"] == str(repo.resolve()), job
+            # outside any repo the default is NOT invented: cwd stays unset
+            loose = Path(tmp) / "loose.yaml"
+            loose.write_text(_HOST_ONLY_YAML.replace("eval_drain", "loose_drain"),
+                             encoding="utf-8")
+            plan, _ = cli.import_routine_plan([loose], {})
+            assert plan and plan[0]["cwd"] is None, plan
+            # a container routine (no host_only) keeps its declared cwd untouched
+            shaped = repo / "cfg" / "dp.yaml"
+            shaped.write_text(_DISK_PRESSURE_SHAPED_YAML, encoding="utf-8")
+            plan2, _ = cli.import_routine_plan([shaped], {})
+            assert plan2[0]["cwd"] == "/app/AitherOS", plan2
+
+
 def import_routine_apply_with_i_am_the_runner_writes_the_job_exactly_once() -> None:
     with _home() as base:
         with tempfile.TemporaryDirectory(prefix="awrise-selftest-routines-") as tmp:
@@ -3175,6 +3220,7 @@ CASES: List[Tuple[str, Callable[[], None]]] = [
         dry_run_predict_skip_agrees_with_the_real_pass,
         import_routine_translates_a_shaped_yaml_and_writes_nothing_without_apply,
         import_routine_apply_with_i_am_the_runner_writes_the_job_exactly_once,
+        import_routine_host_only_without_cwd_defaults_to_its_repo_root,
         import_routine_apply_without_the_runner_flag_is_refused,
         import_routine_refuses_cron_and_non_shell_actions_by_name,
         import_routine_refuses_a_block_pattern_and_a_metacharacter_under_apply,

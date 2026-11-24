@@ -4349,6 +4349,14 @@ def _translate_routine_action(action: object) -> Tuple[Optional[dict], List[str]
     return result, []
 
 
+def _repo_root_of(path: Path) -> Optional[Path]:
+    """The nearest ancestor of ``path`` holding a ``.git`` (dir, or file in a worktree)."""
+    for parent in Path(path).resolve().parents:
+        if (parent / ".git").exists():
+            return parent
+    return None
+
+
 def import_routine_plan(paths: List[Path], jobs: dict) -> Tuple[List[dict], List[dict]]:
     """(proposals, skipped). Reads only; never writes.
 
@@ -4455,6 +4463,18 @@ def import_routine_plan(paths: List[Path], jobs: dict) -> Tuple[List[dict], List
                 )
                 continue
             claimed[name] = entry_source
+            cwd = translated.get("cwd")
+            meta_block = routine.get("_meta") if isinstance(routine.get("_meta"), dict) else {}
+            if cwd is None and meta_block.get("host_only"):
+                # A host-only routine's command is repo-relative
+                # (`python AitherOS/dev/tools/x.py`); with no cwd the detached child
+                # runs wherever the clock started and dies on "can't open file" with no
+                # output (measured 2026-11-23: awrun-eval-drain claimed nothing for a
+                # pass). Default to the checkout the routine file lives in.
+                root = _repo_root_of(path)
+                if root is not None:
+                    cwd = str(root)
+                    action_notes = action_notes + [f"cwd defaulted to the repo root {root}"]
             proposals.append(
                 {
                     "job": name,
@@ -4462,7 +4482,7 @@ def import_routine_plan(paths: List[Path], jobs: dict) -> Tuple[List[dict], List
                     "source": entry_source,
                     "every": every,
                     "run": run,
-                    "cwd": translated.get("cwd"),
+                    "cwd": cwd,
                     "timeout_s": translated.get("timeout_s"),
                     "notes": sched_notes + action_notes,
                     "exists": name in jobs,
