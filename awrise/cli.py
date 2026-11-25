@@ -330,6 +330,20 @@ def cmd_set(args) -> int:
     job["updated_at"] = clock.iso(clock.now_utc())
     store.save(jobs)
     print(f"Updated {name}: " + ", ".join(a.split("=", 1)[0] for a in assignments))
+    if (
+        "detach" in touched
+        and bool(job.get("detach"))
+        and not job.get("receipt")
+        and int(job.get("consecutive_failures") or 0) > 0
+    ):
+        print(
+            f"NOTE: {name} is detached without a receipt while "
+            f"consecutive_failures={int(job['consecutive_failures'])}; "
+            f"detached runs without a receipt cannot auto-clear prior failures. "
+            f"Attach a receipt (`awrise set --name {name} receipt=<path>`) or clear "
+            f"stale counts (`awrise reset-failures --name {name}`).",
+            file=sys.stderr,
+        )
     return 0
 
 
@@ -3926,6 +3940,128 @@ def cmd_reconcile(args) -> int:
     return 1 if closed else 0
 
 
+def _has_failure_state(job: dict) -> bool:
+    return (
+        int(job.get("consecutive_failures") or 0) > 0
+        or int(job.get("why_streak") or 0) > 0
+        or any(job.get(key) is not None for key in _WHY_CLEARED)
+    )
+
+
+def cmd_reset_failures(args) -> int:
+    """Explicit operator verb to clear consecutive_failures / why state.
+
+    Never fakes a ``success`` wake: every reset writes an audited ``reconciled``
+    row into the ledger recording the prior failure count and why it was cleared.
+    """
+    base = store.home()
+    jobs = store.load(base)
+    name = getattr(args, "name", None)
+    detached_no_receipt = bool(getattr(args, "detached_no_receipt", False))
+    reset_all = bool(getattr(args, "all", False))
+    dry_run = bool(getattr(args, "dry_run", False))
+    as_json = bool(getattr(args, "json", False))
+    note = (getattr(args, "reason", None) or "").strip()
+
+    if name:
+        if name not in jobs:
+            print("Not found", file=sys.stderr)
+            return 1
+        targets = [name] if _has_failure_state(jobs[name]) else []
+        mode = "name"
+    elif detached_no_receipt:
+        targets = sorted(
+            job_name
+            for job_name, job in jobs.items()
+            if bool(job.get("detach"))
+            and not job.get("receipt")
+            and job.get("last_state") == "detached"
+            and _has_failure_state(job)
+        )
+        mode = "detached_no_receipt"
+    elif reset_all:
+        targets = sorted(job_name for job_name, job in jobs.items() if _has_failure_state(job))
+        mode = "all"
+    else:
+        print(
+            "Error: choose one of --name <job>, --detached-no-receipt, or --all",
+            file=sys.stderr,
+        )
+        return 1
+
+    plan = [
+        {
+            "name": job_name,
+            "previous_failures": int(jobs[job_name].get("consecutive_failures") or 0),
+            "previous_why_streak": int(jobs[job_name].get("why_streak") or 0),
+            "last_state": jobs[job_name].get("last_state"),
+            "detach": bool(jobs[job_name].get("detach")),
+            "has_receipt": bool(jobs[job_name].get("receipt")),
+        }
+        for job_name in targets
+    ]
+
+    if dry_run:
+        if as_json:
+            print(json.dumps({"dry_run": True, "mode": mode, "jobs": plan}, indent=2))
+        elif not plan:
+            print("Nothing to reset (dry run)")
+        else:
+            print(f"DRY RUN: would reset {len(plan)} job(s):")
+            for item in plan:
+                print(
+                    f"  {item['name']:<34} was {item['previous_failures']}x "
+                    f"(last_state={item['last_state'] or 'pending'}, "
+                    f"detach={item['detach']}, receipt={'yes' if item['has_receipt'] else 'no'})"
+                )
+        return 0
+
+    if not plan:
+        if as_json:
+            print(json.dumps({"dry_run": False, "mode": mode, "reset": []}, indent=2))
+        else:
+            print("Nothing to reset")
+        return 0
+
+    now = clock.iso(clock.now_utc())
+    for item in plan:
+        job = jobs[item["name"]]
+        job["consecutive_failures"] = 0
+        job["why_streak"] = 0
+        for key in _WHY_CLEARED:
+            job[key] = None
+        job["updated_at"] = now
+
+    jobs = store.reload_merge(jobs, [item["name"] for item in plan], base)
+    store.save(jobs, base)
+
+    base_reason = (
+        "operator_reset_detached_no_receipt"
+        if mode == "detached_no_receipt"
+        else "operator_reset_failures"
+    )
+    for item in plan:
+        reason = f"{base_reason} (was {item['previous_failures']}x)"
+        if note:
+            reason = f"{reason}: {ledger.redact(note)}"
+        ledger.append(
+            base,
+            {
+                "event": "reconciled",
+                "job": item["name"],
+                "reason": reason,
+            },
+        )
+
+    if as_json:
+        print(json.dumps({"dry_run": False, "mode": mode, "reset": plan}, indent=2))
+    else:
+        print(f"Reset {len(plan)} job(s):")
+        for item in plan:
+            print(f"  {item['name']:<34} cleared (was {item['previous_failures']}x)")
+    return 0
+
+
 # ---------------------------------------------------------------- prewarm
 
 #: The usage ledger: one ``<service>.json`` per service, holding when that
@@ -4977,6 +5113,32 @@ def _build_parser() -> argparse.ArgumentParser:
         "an empty one (refused while anything readable is there)",
     )
     rec_p.set_defaults(func=cmd_reconcile)
+
+    rst_p = subs.add_parser(
+        "reset-failures",
+        help="clear consecutive_failures/why state with an audited reconciled ledger row",
+    )
+    rst_target = rst_p.add_mutually_exclusive_group(required=True)
+    rst_target.add_argument("--name", default=None, help="reset one named job")
+    rst_target.add_argument(
+        "--detached-no-receipt",
+        dest="detached_no_receipt",
+        action="store_true",
+        help="reset detached jobs without a receipt carrying stale failure counts",
+    )
+    rst_target.add_argument(
+        "--all",
+        action="store_true",
+        help="reset every job that currently has non-zero failure/why state",
+    )
+    rst_p.add_argument(
+        "--dry-run", action="store_true", help="report matching jobs without writing anything"
+    )
+    rst_p.add_argument(
+        "--reason", default=None, help="optional operator note recorded in the reconciled row"
+    )
+    rst_p.add_argument("--json", action="store_true")
+    rst_p.set_defaults(func=cmd_reset_failures)
 
     imp_p = subs.add_parser(
         "import-routine",

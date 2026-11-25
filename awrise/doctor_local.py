@@ -11,10 +11,20 @@ things are usually fine.
 from __future__ import annotations
 
 import os
+import re
 import sys
 from pathlib import Path
+from typing import Optional
 
 from . import clock, hostclock, ledger, store
+
+_CMD_HOME_RE = re.compile(r'(?im)^\s*set\s+"?AWRISE_HOME=([^"\r\n]+)"?\s*$')
+_SH_HOME_RE = re.compile(
+    r'(?m)^\s*(?:export\s+|Environment="?|)AWRISE_HOME=(?:"([^"\r\n]+)"|\'([^\'\r\n]+)\'|([^\s"\r\n]+))'
+)
+_WIN_DRIVE_RE = re.compile(r"^([A-Za-z]):[\\/](.*)$")
+_WSL_MOUNT_RE = re.compile(r"^(?:/var)?/mnt/([A-Za-z])/(.*)$")
+_SPLIT_SIBLING_FRESH_S = 600.0
 
 
 def _home() -> Path:
@@ -183,6 +193,177 @@ def _ledger_line(base: Path) -> "tuple[str, list, list]":
     return f"ledger     writable at {ledger.ledger_dir(base)}", [], []
 
 
+def _normalize_home_cmp(raw: str) -> str:
+    """Canonical comparable key for an AWRISE_HOME path across Windows/WSL."""
+    text = str(raw).strip().rstrip("\\/")
+    win = _WIN_DRIVE_RE.match(text)
+    if win:
+        rest = win.group(2).replace("\\", "/").strip("/")
+        return f"win:{win.group(1).lower()}:/{rest.lower()}"
+    wsl = _WSL_MOUNT_RE.match(text)
+    if wsl:
+        rest = wsl.group(2).replace("\\", "/").strip("/")
+        return f"win:{wsl.group(1).lower()}:/{rest.lower()}"
+    return os.path.normcase(os.path.normpath(text))
+
+
+def _resolve_wrapper_target(raw: str, base: Path) -> Optional[Path]:
+    """Translate a wrapper's AWRISE_HOME string to a readable Path when possible."""
+    text = str(raw).strip()
+    if not text:
+        return None
+    win = _WIN_DRIVE_RE.match(text)
+    if win and os.name != "nt":
+        drive = win.group(1).lower()
+        rest = win.group(2).replace("\\", "/")
+        base_str = str(base)
+        prefix = "/var/mnt" if base_str.startswith("/var/mnt/") else "/mnt"
+        return Path(f"{prefix}/{drive}/{rest}")
+    return Path(text)
+
+
+def _extract_wrapper_home(wrapper: Path) -> Optional[str]:
+    try:
+        text = wrapper.read_text(encoding="utf-8", errors="replace")[:16384]
+    except OSError:
+        return None
+    match = _CMD_HOME_RE.search(text)
+    if match:
+        return match.group(1).strip()
+    match = _SH_HOME_RE.search(text)
+    if match:
+        return (match.group(1) or match.group(2) or match.group(3) or "").strip()
+    return None
+
+
+def _split_home_line(base: Path) -> "tuple[Optional[str], list, list]":
+    """Detect split AWRISE_HOME where the host clock ticks a DIFFERENT store.
+
+    Measured in production: ``~/.aither/awrise/bin/run-due.cmd`` set
+    ``AWRISE_HOME=...\\awrise-wzns`` while readers without ``AWRISE_HOME`` read
+    ``~/.aither/awrise`` -- making every dashboard claim the scheduler clock
+    stopped ticking while the real clock ticked every 60s in the sibling home.
+    """
+    base_key = _normalize_home_cmp(str(base))
+    bin_dir = base / "bin"
+    for name in ("run-due.cmd", "run-due.sh"):
+        wrapper = bin_dir / name
+        if not wrapper.is_file():
+            continue
+        raw_target = _extract_wrapper_home(wrapper)
+        if not raw_target:
+            continue
+        if _normalize_home_cmp(raw_target) != base_key:
+            target_path = _resolve_wrapper_target(raw_target, base)
+            tick_note = ""
+            if target_path is not None and target_path.is_dir():
+                try:
+                    t_age = hostclock.tick_age_s(target_path, hostclock.SCHEDULED_INVOKERS)
+                except OSError:
+                    t_age = None
+                if t_age is not None:
+                    tick_note = f" (last scheduled tick {hostclock.tick_age_phrase(t_age)})"
+            line = (
+                f"split-home SPLIT HOME: {wrapper.name} sets AWRISE_HOME={raw_target}"
+                f"{tick_note}, but this awrise reads {base}\n"
+                f"           set AWRISE_HOME={raw_target} or run `awrise install-clock --force` "
+                f"from the intended home"
+            )
+            return (
+                line,
+                [
+                    f"split AWRISE_HOME: {wrapper} writes to {raw_target}, not {base}; "
+                    f"reconcile AWRISE_HOME so clock and readers use the same store"
+                ],
+                [],
+            )
+
+    # Even without a local wrapper in base/bin, catch a stale store sitting next
+    # to an actively ticking sibling store (e.g. awrise vs awrise-<user>).
+    try:
+        own_age = hostclock.tick_age_s(base, hostclock.SCHEDULED_INVOKERS)
+    except OSError:
+        own_age = None
+    if own_age is not None and own_age <= _SPLIT_SIBLING_FRESH_S:
+        return None, [], []
+
+    parent = base.parent
+    candidates: list[Path] = []
+    try:
+        if parent.is_dir():
+            prefix = base.name + "-"
+            for entry in sorted(parent.iterdir()):
+                if entry != base and entry.is_dir() and entry.name.startswith(prefix):
+                    candidates.append(entry)
+            if "-" in base.name:
+                stem = parent / base.name.split("-", 1)[0]
+                if stem != base and stem.is_dir():
+                    candidates.append(stem)
+    except OSError:
+        candidates = []
+
+    for sib in candidates:
+        if not ledger.ledger_dir(sib).is_dir():
+            continue
+        try:
+            sib_age = hostclock.tick_age_s(sib, hostclock.SCHEDULED_INVOKERS)
+        except OSError:
+            continue
+        if sib_age is not None and sib_age <= _SPLIT_SIBLING_FRESH_S:
+            own_phrase = "never" if own_age is None else hostclock.tick_age_phrase(own_age)
+            sib_phrase = hostclock.tick_age_phrase(sib_age)
+            line = (
+                f"split-home SPLIT HOME: sibling store {sib} ticked {sib_phrase} "
+                f"while this home ({base}) is stale ({own_phrase})\n"
+                f"           set AWRISE_HOME={sib} or consolidate both stores to one AWRISE_HOME"
+            )
+            return (
+                line,
+                [
+                    f"split AWRISE_HOME: sibling store {sib} ticked {sib_phrase} while "
+                    f"{base} is stale ({own_phrase})"
+                ],
+                [],
+            )
+    return None, [], []
+
+
+def _detached_stale_line(base: Path) -> "tuple[Optional[str], list, list]":
+    """Surface detached jobs with no receipt carrying frozen consecutive_failures.
+
+    A detached job without ``receipt`` spawns and returns ``detached``; it never
+    records ``success``, so any ``consecutive_failures`` accumulated before
+    ``detach=true`` stays frozen forever. Informational here (WL006 already
+    judges receiptless detached jobs as UNJUDGED in ``awrise status``).
+    """
+    try:
+        jobs = store.load(base)
+    except (store.StoreError, OSError):
+        return None, [], []
+    frozen = []
+    for name, job in jobs.items():
+        if not job.get("enabled", True):
+            continue
+        if not job.get("detach") or job.get("receipt") or job.get("last_state") != "detached":
+            continue
+        fails = int(job.get("consecutive_failures") or 0)
+        if fails > 0:
+            frozen.append((fails, name))
+    if not frozen:
+        return None, [], []
+    frozen.sort(key=lambda item: (-item[0], item[1]))
+    shown = ", ".join(f"{name} ({fails}x)" for fails, name in frozen[:3])
+    if len(frozen) > 3:
+        shown += f", +{len(frozen) - 3} more"
+    line = (
+        f"detached   {len(frozen)} detached job(s) without receipt carry frozen "
+        f"consecutive_failures: {shown}\n"
+        "           set `receipt=<path>` or clear stale counts with "
+        "`awrise reset-failures --detached-no-receipt --dry-run`"
+    )
+    return line, [], []
+
+
 #: The most recent measurement, so the verdict the generated doctor asks for is
 #: the verdict for the lines it just printed. Two independent passes could
 #: disagree -- a clock ticking between them is enough -- and a verdict that does
@@ -200,9 +381,16 @@ def _measure() -> tuple:
     except store.StoreError as exc:
         return ([f"home       UNUSABLE: {exc}"], [f"$AWRISE_HOME is unusable: {exc}"], [])
     lines.append(f"home       {base}")
-    for measure in (_clock_line, _tick_line, _ledger_line):
+    for measure in (
+        _clock_line,
+        _tick_line,
+        _ledger_line,
+        _split_home_line,
+        _detached_stale_line,
+    ):
         line, said_no, could_not = measure(base)
-        lines.append(line)
+        if line:
+            lines.append(line)
         problems.extend(said_no)
         unjudged.extend(could_not)
     return lines, problems, unjudged
