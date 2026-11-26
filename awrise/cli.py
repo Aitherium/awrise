@@ -4784,8 +4784,14 @@ def _cmd_history_import_fleet(path: Path, as_json: bool) -> int:
 
 
 def _build_parser() -> argparse.ArgumentParser:
+    from . import __version__
+
     parser = argparse.ArgumentParser(prog="awrise", description="Wake something on a schedule")
-    parser.add_argument("--self-test", action="store_true", help="prove the brick can still fail")
+    parser.add_argument("--version", action="version", version=f"awrise {__version__}")
+    parser.add_argument(
+        "--self-test", "--selftest", dest="self_test", action="store_true",
+        help="prove the brick can still fail",
+    )
     parser.add_argument("--list", action="store_true", help="with --self-test: list the cases")
     subs = parser.add_subparsers(dest="command")
 
@@ -5235,7 +5241,7 @@ def main(argv: Optional[List[str]] = None) -> int:
     # that is not a flag -- otherwise the global intercept silently swallows
     # a sub-verb's flag and runs the wrong suite while reporting success.
     stop = next((i for i, item in enumerate(argv) if not item.startswith("-")), len(argv))
-    if "--self-test" in argv[:stop]:
+    if "--self-test" in argv[:stop] or "--selftest" in argv[:stop]:
         from .selftest import run
 
         return run(list_only="--list" in argv)
