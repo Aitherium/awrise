@@ -139,6 +139,9 @@ SPEC_DEFAULTS: Dict[str, object] = {
     # A job that names a receipt lets WL006 read that verdict instead of
     # abstaining. JSON, and an `exit_code` key is what is read.
     "receipt": None,
+    # Consecutive identical bad wakes before auto-dispatching a fix agent.
+    # None inherits why.AUTO_INVESTIGATE_AFTER (5); 0 disables for this job.
+    "auto_investigate_after": None,
 }
 #: What a job says about telling someone. Every field is off or inert by
 #: default except ``on`` (which only says WHICH outcomes would be reported if
@@ -149,6 +152,7 @@ REPORT_DEFAULTS: Dict[str, object] = {
     "on": ["failure", "timeout", "error", "orphaned"],
     "card_after": 3,
     "card_id": None,
+    "card_unavailable_at": None,
     "memory": False,
 }
 #: What a job does about windows that came and went while nothing was running.
@@ -196,6 +200,7 @@ SETTABLE = (
     "wake_required",
     "predict",
     "lane",
+    "auto_investigate_after",
     "report.relay",
     "report.on",
     "report.card_after",
@@ -226,6 +231,9 @@ STATE_DEFAULTS: Dict[str, object] = {
     "held_until": None,
     "held_on": None,
     "why_card": None,
+    "why_card_at": None,
+    "why_investigated": None,
+    "why_investigated_at": None,
 }
 STATE_KEYS = tuple(STATE_DEFAULTS)
 Jobs = Dict[str, dict]
@@ -730,6 +738,13 @@ def validate_report(name: str, raw: object) -> Optional[dict]:
         raise bad("card_after", "must be a non-negative integer (0 = never raise a card)")
     if full["card_id"] is not None and not isinstance(full["card_id"], str):
         raise bad("card_id", "must be a string or null")
+    if full["card_unavailable_at"] is not None:
+        if not isinstance(full["card_unavailable_at"], str):
+            raise bad("card_unavailable_at", "must be an ISO timestamp or null")
+        try:
+            clock.parse_ts(full["card_unavailable_at"])
+        except ValueError as exc:
+            raise bad("card_unavailable_at", f"is not an ISO timestamp ({exc})") from exc
     if not isinstance(full["memory"], bool):
         raise bad("memory", "must be true or false")
     return full
@@ -783,6 +798,11 @@ def validate_record(name: str, job: object) -> dict:
         raise bad("cwd", "must be a path or null")
     if full["receipt"] is not None and not isinstance(full["receipt"], str):
         raise bad("receipt", "must be a path or null")
+    auto_inv = full["auto_investigate_after"]
+    if auto_inv is not None and (
+        isinstance(auto_inv, bool) or not isinstance(auto_inv, int) or auto_inv < 0
+    ):
+        raise bad("auto_investigate_after", "must be a non-negative integer or null")
     try:
         clock.parse_at(full["at"])
     except ValueError as exc:
@@ -851,6 +871,8 @@ def validate_record(name: str, job: object) -> dict:
         "updated_at",
         "why_since",
         "held_until",
+        "why_card_at",
+        "why_investigated_at",
     ):
         value = full[field]
         if value is None:
@@ -863,7 +885,14 @@ def validate_record(name: str, job: object) -> dict:
             raise bad(field, f"is not an ISO timestamp ({exc})") from exc
     if full["last_state"] is not None and full["last_state"] not in ledger.STATES:
         raise bad("last_state", "is not a ledger state")
-    for field in ("last_wake_id", "last_reason", "last_why", "held_on", "why_card"):
+    for field in (
+        "last_wake_id",
+        "last_reason",
+        "last_why",
+        "held_on",
+        "why_card",
+        "why_investigated",
+    ):
         if full[field] is not None and not isinstance(full[field], str):
             raise bad(field, "must be a string or null")
     if full["last_cause"] is not None and full["last_cause"] not in why.CAUSES:

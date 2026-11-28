@@ -36,7 +36,7 @@ from .executors import Outcome
 # self-test also scans.
 READS = (
     "enabled", "run", "every", "interval_s", "at", "missed", "report", "predict",
-    "receipt", "lane",
+    "receipt", "lane", "auto_investigate_after",
 )
 
 Executor = Callable[[dict, dict], Outcome]
@@ -226,6 +226,15 @@ def _coerce(key: str, raw: str):
             raise FatalError(
                 1, f"Error: report.card_after must be an integer, not {raw.strip()!r}"
             ) from exc
+    if key == "auto_investigate_after":
+        if raw.strip().lower() in ("", "null", "none"):
+            return None
+        try:
+            return int(raw.strip())
+        except ValueError as exc:
+            raise FatalError(
+                1, f"Error: auto_investigate_after must be an integer or null, not {raw.strip()!r}"
+            ) from exc
     return raw
 
 
@@ -275,6 +284,9 @@ def cmd_add(args) -> int:
     job["timeout_s"] = store.SPEC_DEFAULTS["timeout_s"] if timeout is None else timeout
     job["cwd"] = getattr(args, "cwd", None) or None
     job["receipt"] = getattr(args, "receipt", None) or None
+    auto_inv = getattr(args, "auto_investigate_after", None)
+    if auto_inv is not None:
+        job["auto_investigate_after"] = auto_inv
     job["at"] = getattr(args, "at", None) or None
     job["enabled"] = not getattr(args, "disabled", False)
     job["detach"] = bool(getattr(args, "detach", False))
@@ -834,7 +846,17 @@ def _stamp(
 # dependency-down streak is HELD (backed off, never piled up); a code-bug
 # streak raises ONE card. Measured 2026-11-08 on the owner's desk.
 
-_WHY_CLEARED = ("last_why", "last_cause", "why_since", "held_until", "held_on", "why_card")
+_WHY_CLEARED = (
+    "last_why",
+    "last_cause",
+    "why_since",
+    "held_until",
+    "held_on",
+    "why_card",
+    "why_card_at",
+    "why_investigated",
+    "why_investigated_at",
+)
 
 
 def why_of(outcome: Outcome) -> Tuple[str, str, str]:
@@ -935,25 +957,46 @@ def _raise_why_card(name: str, job: dict, tail: str) -> Tuple[Optional[str], str
     return str(card_id), ""
 
 
+def _sentinel_expired(ts_iso: Optional[str], window_s: float) -> bool:
+    """True when an unavailable/cooldown timestamp is missing or older than ``window_s``."""
+    if not ts_iso:
+        return True
+    try:
+        dt = clock.parse_ts(ts_iso)
+    except (ValueError, TypeError):
+        return True
+    if dt is None:
+        return True
+    return (clock.now_utc() - dt).total_seconds() >= window_s
+
+
 def maybe_raise_why_card(
     base: Path, jobs: dict, name: str, wake_id: str, pass_id: str, invoker: str, tail: str
 ) -> dict:
-    """ONE card per (job, why streak) once a code-bug why repeats CARD_AFTER times.
+    """ONE card per (job, why streak) once an actionable why repeats CARD_AFTER times.
 
+    Covers ``code-bug``, ``config``, and ``unknown`` (everything in ``why.CARD_CAUSES``).
     Dependency-down is a hold, not a decision, and gets no card. A raise that
-    fails is recorded once (``<key>:unavailable:...``) so a host with no awask
-    does not write the same report_error row on every pass.
+    fails is recorded as ``<key>:unavailable:...`` and retried after
+    ``why.UNAVAILABLE_RETRY_S`` (1h) rather than silencing the entire streak forever.
     """
     job = jobs.get(name)
-    if job is None or job.get("last_cause") != "code-bug":
+    if job is None or job.get("last_cause") not in why.CARD_CAUSES:
         return jobs
     if job.get("last_state") not in ledger.BAD_STATES:
         return jobs
     if int(job.get("why_streak") or 0) < why.CARD_AFTER:
         return jobs
     key = why.why_key(job.get("last_why"))
-    if not key or str(job.get("why_card") or "").startswith(key + ":"):
+    if not key:
         return jobs
+    existing = str(job.get("why_card") or "")
+    if existing.startswith(key + ":"):
+        if ":unavailable:" not in existing or not _sentinel_expired(
+            job.get("why_card_at"), why.UNAVAILABLE_RETRY_S
+        ):
+            return jobs
+    now_iso = clock.iso(clock.now_utc())
     card_id, problem = _raise_why_card(name, job, tail)
     if problem:
         _report_error_row(base, name, wake_id, pass_id, invoker, f"why_card:{problem}")
@@ -975,6 +1018,110 @@ def maybe_raise_why_card(
                 },
             )
     job["why_card"] = stamp
+    job["why_card_at"] = now_iso
+    jobs = store.reload_merge(jobs, [name], base)
+    store.save(jobs, base)
+    return jobs
+
+
+#: Env override for the default consecutive-failure threshold before auto-investigating.
+AUTO_INVESTIGATE_AFTER_ENV = "AWRISE_AUTO_INVESTIGATE_AFTER"
+
+
+def _auto_investigate_threshold(job: dict) -> int:
+    explicit = job.get("auto_investigate_after")
+    if explicit is not None:
+        return int(explicit)
+    raw_env = (os.environ.get(AUTO_INVESTIGATE_AFTER_ENV) or "").strip()
+    if raw_env:
+        try:
+            return max(0, int(raw_env))
+        except ValueError:
+            pass
+    return why.AUTO_INVESTIGATE_AFTER
+
+
+def _active_auto_investigations(jobs: dict) -> int:
+    """Count jobs with a real (non-unavailable) auto-investigation inside the active window."""
+    active = 0
+    for other in jobs.values():
+        stamp = str(other.get("why_investigated") or "")
+        if not stamp or ":unavailable:" in stamp:
+            continue
+        if not _sentinel_expired(
+            other.get("why_investigated_at"), why.AUTO_INVESTIGATE_ACTIVE_WINDOW_S
+        ):
+            active += 1
+    return active
+
+
+def maybe_auto_investigate(
+    base: Path, jobs: dict, name: str, wake_id: str, pass_id: str, invoker: str, tail: str
+) -> dict:
+    """Auto-dispatch ONE fix agent per (job, why_key) after repeated actionable failures.
+
+    Bounded on four axes so a broken host cannot fork-bomb sessions:
+    1. Only actionable causes (``code-bug``, ``config``, ``unknown``; never ``dependency-down``).
+    2. Threshold ``auto_investigate_after`` (default 5; 0 disables).
+    3. Per-(job, why_key) cooldown of ``AUTO_INVESTIGATE_COOLDOWN_S`` (6h), or
+       ``UNAVAILABLE_RETRY_S`` (1h) if the harness daemon was unreachable.
+    4. Host-wide concurrency cap ``AUTO_INVESTIGATE_MAX_CONCURRENT`` (2) within the active window.
+    """
+    job = jobs.get(name)
+    if job is None or job.get("last_cause") not in why.AUTO_INVESTIGATE_CAUSES:
+        return jobs
+    if job.get("last_state") not in ledger.BAD_STATES:
+        return jobs
+    threshold = _auto_investigate_threshold(job)
+    if threshold <= 0 or int(job.get("why_streak") or 0) < threshold:
+        return jobs
+    key = why.why_key(job.get("last_why"))
+    if not key:
+        return jobs
+    existing = str(job.get("why_investigated") or "")
+    if existing.startswith(key + ":"):
+        window = (
+            why.UNAVAILABLE_RETRY_S
+            if ":unavailable:" in existing
+            else why.AUTO_INVESTIGATE_COOLDOWN_S
+        )
+        if not _sentinel_expired(job.get("why_investigated_at"), window):
+            return jobs
+    if _active_auto_investigations(jobs) >= why.AUTO_INVESTIGATE_MAX_CONCURRENT:
+        return jobs
+    now_iso = clock.iso(clock.now_utc())
+    row = {
+        "wake_id": wake_id,
+        "ts": now_iso,
+        "why": job.get("last_why"),
+        "cause": job.get("last_cause"),
+        "output_tail": tail,
+    }
+    brief = investigation_brief(name, job, row)
+    harness = (os.environ.get(INVESTIGATE_HARNESS_ENV) or "").strip() or "claude"
+    cwd = job.get("cwd") or (os.environ.get(INVESTIGATE_CWD_ENV) or "").strip() or str(Path.home())
+    session, problem = dispatch_fix_agent(name, brief, harness=harness, cwd=str(cwd))
+    if problem:
+        _report_error_row(base, name, wake_id, pass_id, invoker, f"auto_investigate:{problem}")
+        stamp = f"{key}:unavailable:{problem[:60]}"
+    else:
+        stamp = f"{key}:{session}"
+        with contextlib.suppress(Exception):
+            ledger.append(
+                base,
+                {
+                    "wake_id": wake_id,
+                    "pass_id": pass_id,
+                    "invoker": invoker,
+                    "job": name,
+                    "event": "dispatched",
+                    "reason": f"auto_fix_agent:{harness}:{session}",
+                    "session": session,
+                    "why": job.get("last_why"),
+                },
+            )
+    job["why_investigated"] = stamp
+    job["why_investigated_at"] = now_iso
     jobs = store.reload_merge(jobs, [name], base)
     store.save(jobs, base)
     return jobs
@@ -1792,17 +1939,24 @@ def _notify(
         # The streak ended, so the card that named it is spent. Clearing it
         # here is what lets a job that recovers and later fails again raise a
         # SECOND card instead of being silent forever.
-        if not report.get("card_id"):
+        if not report.get("card_id") and not report.get("card_unavailable_at"):
             return jobs
         report["card_id"] = None
-    elif not card_after or fails < int(card_after) or report.get("card_id"):
+        report["card_unavailable_at"] = None
+    elif not card_after or fails < int(card_after):
+        return jobs
+    elif report.get("card_id") and not (
+        str(report.get("card_id")).startswith("unavailable:")
+        and "awask_not_installed" not in str(report.get("card_id"))
+        and _sentinel_expired(report.get("card_unavailable_at"), why.UNAVAILABLE_RETRY_S)
+    ):
         return jobs
     else:
         card_id, problem = _raise_card(name, fails, outcome)
         if problem:
             # A card that could not be raised (measured 2026-09-30: fleet-gates at 3
             # consecutive failures, `awask_timed_out_after_30s`) must not leave the
-            # streak untold: re-send it as a relay ALERT, once per streak like the card.
+            # streak untold: re-send it as a relay ALERT, once per backoff window.
             fallback = channel or CARD_FALLBACK_CHANNEL
             relay_problem = store.relay_channel_problem(fallback) or _send_relay(
                 str(fallback),
@@ -1813,12 +1967,13 @@ def _notify(
             if relay_problem:
                 problem = f"{problem};relay_fallback:{relay_problem}"
             _report_error_row(base, name, wake_id, pass_id, invoker, problem)
-            # The sentinel is what makes "one per streak" true for a FAILED
-            # raise too: without it a host with no awask writes the same row
-            # on every pass, forever, and the ledger stops being readable.
+            # Retry after UNAVAILABLE_RETRY_S (1h) instead of silencing the entire
+            # streak forever when awask had a transient 30s timeout.
             report["card_id"] = f"unavailable:{problem[:80]}"
+            report["card_unavailable_at"] = clock.iso(clock.now_utc())
         else:
             report["card_id"] = card_id
+            report["card_unavailable_at"] = None
             with contextlib.suppress(Exception):
                 ledger.append(
                     base,
@@ -1997,6 +2152,7 @@ def _record(
     jobs = _notify(base, jobs, name, wake_id, pass_id, invoker, outcome)
     if why_line:
         jobs = maybe_raise_why_card(base, jobs, name, wake_id, pass_id, invoker, why_tail)
+        jobs = maybe_auto_investigate(base, jobs, name, wake_id, pass_id, invoker, why_tail)
     return jobs
 
 
@@ -3137,6 +3293,8 @@ def _print_why(job: Optional[dict], row: Optional[dict], now) -> None:
             print(f"held         until {until} -- dependency down: {job.get('held_on')}")
         if job.get("why_card"):
             print(f"card         {job['why_card']}")
+        if job.get("why_investigated"):
+            print(f"investigated {job['why_investigated']}")
     if row is not None:
         print(f"output tail  (wake {row.get('wake_id')} at {(row.get('ts') or '')[:19]}):")
         for text in (tail or "(no output captured)").splitlines():
@@ -4883,6 +5041,14 @@ def _build_parser() -> argparse.ArgumentParser:
         default=None,
         metavar="N",
         help="raise ONE decision card after N consecutive bad wakes (0 = never)",
+    )
+    add_p.add_argument(
+        "--auto-investigate-after",
+        dest="auto_investigate_after",
+        type=int,
+        default=None,
+        metavar="N",
+        help="auto-dispatch ONE fix agent after N identical actionable bad wakes (0 = disable)",
     )
     add_p.set_defaults(func=cmd_add)
 

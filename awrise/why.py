@@ -34,8 +34,24 @@ WHY_CHARS = 200
 #: The same ``why`` this many wakes in a row is a pattern, not a blip: a
 #: dependency-down cause starts being held at this streak.
 HOLD_AFTER = 3
-#: A code-bug ``why`` this many wakes in a row raises ONE decision card.
+#: An actionable ``why`` this many wakes in a row raises ONE decision card.
 CARD_AFTER = 5
+#: Causes that warrant a wake-failed card or auto-investigation (everything
+#: actionable — never dependency-down, which is already on exponential hold).
+CARD_CAUSES = ("code-bug", "config", "unknown")
+#: Default consecutive identical bad wakes before awrise auto-dispatches a fix
+#: agent once per (job, why_key). 0 disables auto-investigation.
+AUTO_INVESTIGATE_AFTER = 5
+AUTO_INVESTIGATE_CAUSES = ("code-bug", "config", "unknown")
+#: Minimum cooldown before auto-investigating the same (job, why_key) again.
+AUTO_INVESTIGATE_COOLDOWN_S = 6 * 3600.0
+#: Active window used to enforce AUTO_INVESTIGATE_MAX_CONCURRENT across jobs.
+AUTO_INVESTIGATE_ACTIVE_WINDOW_S = 1800.0
+#: Max concurrent auto-dispatched fix agents per host within the active window.
+AUTO_INVESTIGATE_MAX_CONCURRENT = 2
+#: Retry backoff for ``unavailable:*`` card/investigate sentinels (1h instead
+#: of silencing escalation for the entire streak).
+UNAVAILABLE_RETRY_S = 3600.0
 #: The hold never grows past an hour: a dependency that comes back is noticed
 #: within the hour, whatever the streak.
 HOLD_CAP_S = 3600.0

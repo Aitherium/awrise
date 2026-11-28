@@ -319,3 +319,107 @@ def test_investigate_without_a_token_is_exit_2(home, monkeypatch, tmp_path):
     monkeypatch.setattr(cli.Path, "home", staticmethod(lambda: tmp_path / "nohome"))
     args = argparse.Namespace(name="cards", dispatch=True, harness=None, cwd=None)
     assert cli._dispatch(cli.cmd_investigate, args) == 2
+
+
+# -------------------------------------------------------- auto-investigate
+
+
+def _harness_spy(monkeypatch):
+    posts = []
+
+    def fake_post(url, token, body):
+        posts.append((url, body))
+        if url.endswith("/sessions"):
+            return {"id": f"s-{len(posts)}"}, ""
+        return {}, ""
+
+    monkeypatch.setenv("AITHER_HARNESS_TOKEN", "t0k")
+    monkeypatch.setenv("AITHER_HARNESS_URL", "http://127.0.0.1:1")
+    monkeypatch.setattr(cli, "_harness_post", fake_post)
+    return posts
+
+
+@pytest.mark.parametrize(
+    ("stderr", "expected_cause"),
+    [
+        (CARDS, "code-bug"),
+        ("scp: /missing/file.ckpt: No such file or directory", "config"),
+        ("", "unknown"),
+    ],
+)
+def test_auto_investigate_triggers_for_actionable_causes_once_per_streak(
+    home, monkeypatch, stderr, expected_cause
+):
+    _card_spy(monkeypatch)
+    posts = _harness_spy(monkeypatch)
+    _add("broken", every="5m")
+    for _ in range(why.AUTO_INVESTIGATE_AFTER + 2):
+        _make_due(home, "broken")
+        _run_due(_failing(stderr=stderr))
+    job = store.load(home)["broken"]
+    assert job["last_cause"] == expected_cause
+    assert job["why_investigated"] and ":unavailable:" not in job["why_investigated"]
+    assert job["why_investigated_at"]
+    sessions = [u for u, _ in posts if u.endswith("/sessions")]
+    assert len(sessions) == 1
+    assert any(
+        r["event"] == "dispatched" and str(r.get("reason", "")).startswith("auto_fix_agent:")
+        for r in ledger.read(home)
+    )
+    # Recovery clears why_investigated so a future streak can investigate again.
+    _make_due(home, "broken")
+    assert _run_due(lambda job, wake: Outcome("success", "exit_0", exit_code=0)) == 0
+    recovered = store.load(home)["broken"]
+    assert recovered["why_investigated"] is None and recovered["why_investigated_at"] is None
+
+
+def test_auto_investigate_skips_dependency_down_and_respects_opt_out_and_cap(home, monkeypatch):
+    _card_spy(monkeypatch)
+    posts = _harness_spy(monkeypatch)
+    # 1. dependency-down never auto-investigates.
+    _add("moe", every="5m")
+    for _ in range(why.AUTO_INVESTIGATE_AFTER + 1):
+        jobs = store.load(home)
+        jobs["moe"]["held_until"] = None
+        jobs["moe"]["last_started_at"] = clock.iso(clock.now_utc() - timedelta(hours=2))
+        store.save(jobs, home)
+        _run_due(_failing(stderr=MOE))
+    assert not posts
+    # 2. auto_investigate_after=0 disables it per job.
+    _add("quiet", every="5m")
+    jobs = store.load(home)
+    jobs["quiet"]["auto_investigate_after"] = 0
+    store.save(jobs, home)
+    for _ in range(why.AUTO_INVESTIGATE_AFTER + 1):
+        _make_due(home, "quiet")
+        _run_due(_failing(stderr=""))
+    assert not posts
+    # 3. Host concurrency cap (AUTO_INVESTIGATE_MAX_CONCURRENT = 2).
+    for idx in range(3):
+        name = f"j{idx}"
+        _add(name, every="5m")
+        for _ in range(why.AUTO_INVESTIGATE_AFTER):
+            _make_due(home, name)
+            _run_due(_failing(stderr=""))
+    sessions = [u for u, _ in posts if u.endswith("/sessions")]
+    assert len(sessions) == why.AUTO_INVESTIGATE_MAX_CONCURRENT
+
+
+def test_unavailable_card_sentinel_expires_after_backoff(home, monkeypatch):
+    monkeypatch.setattr(executors, "which", lambda name: None)
+    _add("cards", every="5m")
+    for _ in range(why.CARD_AFTER):
+        _make_due(home, "cards")
+        _run_due(_failing(stdout=CARDS))
+    assert ":unavailable:" in store.load(home)["cards"]["why_card"]
+    # Backdate why_card_at past UNAVAILABLE_RETRY_S and make awask work now.
+    jobs = store.load(home)
+    jobs["cards"]["why_card_at"] = clock.iso(
+        clock.now_utc() - timedelta(seconds=why.UNAVAILABLE_RETRY_S + 60)
+    )
+    store.save(jobs, home)
+    calls = _card_spy(monkeypatch)
+    _make_due(home, "cards")
+    _run_due(_failing(stdout=CARDS))
+    assert len([c for c in calls if "--card-recipe" in c]) == 1
+    assert store.load(home)["cards"]["why_card"].endswith(":dc-1")
